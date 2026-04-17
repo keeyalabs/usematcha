@@ -1,9 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
 """matcha._engine — GPU power sampling."""
 
 import threading
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Union
 
 try:
@@ -14,6 +15,17 @@ except ImportError:
     pynvml = None
 
 
+Sample = Tuple[float, List[float]]  # (monotonic_ts, [w_gpu0, w_gpu1, ...])
+
+
+@dataclass
+class GpuStats:
+    idx: int
+    energy_j: float
+    avg_power_w: float
+    peak_power_w: float
+
+
 @dataclass
 class StepResult:
     step: int
@@ -21,6 +33,7 @@ class StepResult:
     duration_s: float
     avg_power_w: float
     peak_power_w: float
+    per_gpu: List[GpuStats] = field(default_factory=list)
 
 
 @dataclass
@@ -31,17 +44,15 @@ class SessionResult:
     avg_power_w: float
     peak_power_w: float
     total_samples: int
+    per_gpu: List[GpuStats] = field(default_factory=list)
 
     @property
     def energy_wh(self) -> float:
         return self.total_energy_j / 3600.0
 
 
-def _integrate(samples: List[Tuple[float, float]]) -> Tuple[float, float]:
-    """Trapezoidal energy integration over (timestamp_s, power_w) samples.
-
-    Returns (energy_j, peak_w).
-    """
+def _integrate_series(samples: List[Tuple[float, float]]) -> Tuple[float, float]:
+    """Trapezoidal over (t, w) samples. Returns (energy_j, peak_w)."""
     if len(samples) < 2:
         return 0.0, (samples[0][1] if samples else 0.0)
     energy_j = 0.0
@@ -57,11 +68,36 @@ def _integrate(samples: List[Tuple[float, float]]) -> Tuple[float, float]:
     return energy_j, peak_w
 
 
+def _compute_stats(
+    samples: List[Sample],
+    gpu_indices: List[int],
+    duration_s: float,
+    running_peak_total_w: float,
+) -> Tuple[float, float, float, List[GpuStats]]:
+    """Reduce per-GPU sample series into totals + per-GPU stats.
+
+    Returns (total_energy_j, total_avg_w, total_peak_w, per_gpu_stats).
+    """
+    per_gpu: List[GpuStats] = []
+    total_energy_j = 0.0
+    for g, idx in enumerate(gpu_indices):
+        series = [(t, ws[g]) for t, ws in samples if g < len(ws)]
+        e_j, peak_w = _integrate_series(series)
+        avg_w = (e_j / duration_s) if duration_s > 0 else (series[0][1] if series else 0.0)
+        per_gpu.append(GpuStats(idx=idx, energy_j=e_j, avg_power_w=avg_w, peak_power_w=peak_w))
+        total_energy_j += e_j
+
+    total_avg_w = total_energy_j / duration_s if duration_s > 0 else 0.0
+    return total_energy_j, total_avg_w, running_peak_total_w, per_gpu
+
+
 class PowerSampler:
-    """Background-thread sampler of total GPU power (summed across devices).
+    """Background-thread sampler of per-GPU power.
 
     Continuous samples feed end-of-run totals. Optional per-step windows
     (begin_step / end_step) give per-step energy for `matcha wrap`.
+    Results include per-GPU breakdowns (useful for straggler detection
+    in multi-GPU runs) alongside summed totals.
     """
 
     def __init__(self, gpu_indices: Union[int, List[int]] = -1, interval_ms: int = 100):
@@ -75,11 +111,11 @@ class PowerSampler:
         self._running = False
         self._handles: List = []
 
-        self._samples: List[Tuple[float, float]] = []
-        self._peak_w = 0.0
+        self._samples: List[Sample] = []
+        self._peak_total_w = 0.0
         self._session_start_t: Optional[float] = None
 
-        self._step_samples: Optional[List[Tuple[float, float]]] = None
+        self._step_samples: Optional[List[Sample]] = None
         self._step_start_t: Optional[float] = None
 
         self.gpu_name: str = ""
@@ -131,25 +167,26 @@ class PowerSampler:
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
         self._thread.start()
 
-    def _read_total_power(self) -> float:
-        total_w = 0.0
+    def _read_per_gpu_power(self) -> List[float]:
+        powers: List[float] = []
         for h in self._handles:
             try:
-                total_w += pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0
+                powers.append(pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0)
             except pynvml.NVMLError:
-                pass
-        return total_w
+                powers.append(0.0)
+        return powers
 
     def _sample_loop(self) -> None:
         while self._running:
-            power_w = self._read_total_power()
+            powers = self._read_per_gpu_power()
+            total_w = sum(powers)
             ts = time.monotonic()
             with self._lock:
-                self._samples.append((ts, power_w))
-                if power_w > self._peak_w:
-                    self._peak_w = power_w
+                self._samples.append((ts, powers))
+                if total_w > self._peak_total_w:
+                    self._peak_total_w = total_w
                 if self._step_samples is not None:
-                    self._step_samples.append((ts, power_w))
+                    self._step_samples.append((ts, powers))
             time.sleep(self._interval_s)
 
     def begin_step(self) -> None:
@@ -165,17 +202,18 @@ class PowerSampler:
             self._step_start_t = None
 
         duration_s = time.monotonic() - start_t if start_t else 0.0
-        energy_j, peak_w = _integrate(samples)
-        avg_power_w = (energy_j / duration_s) if duration_s > 0 else (
-            samples[0][1] if samples else 0.0
+        step_peak_total_w = max((sum(ws) for _, ws in samples), default=0.0)
+        total_e_j, total_avg_w, peak_total_w, per_gpu = _compute_stats(
+            samples, self.gpu_indices, duration_s, step_peak_total_w
         )
 
         return StepResult(
             step=step,
-            energy_j=energy_j,
+            energy_j=total_e_j,
             duration_s=duration_s,
-            avg_power_w=avg_power_w,
-            peak_power_w=peak_w,
+            avg_power_w=total_avg_w,
+            peak_power_w=peak_total_w,
+            per_gpu=per_gpu,
         )
 
     def stop(self) -> SessionResult:
@@ -184,8 +222,9 @@ class PowerSampler:
             self._thread.join(timeout=2.0)
 
         duration_s = time.monotonic() - self._session_start_t if self._session_start_t else 0.0
-        energy_j, _ = _integrate(self._samples)
-        avg_power_w = energy_j / duration_s if duration_s > 0 else 0.0
+        total_e_j, total_avg_w, peak_total_w, per_gpu = _compute_stats(
+            self._samples, self.gpu_indices, duration_s, self._peak_total_w
+        )
 
         try:
             pynvml.nvmlShutdown()
@@ -194,9 +233,10 @@ class PowerSampler:
 
         return SessionResult(
             gpu_name=self.gpu_name,
-            total_energy_j=energy_j,
+            total_energy_j=total_e_j,
             total_duration_s=duration_s,
-            avg_power_w=avg_power_w,
-            peak_power_w=self._peak_w,
+            avg_power_w=total_avg_w,
+            peak_power_w=peak_total_w,
             total_samples=len(self._samples),
+            per_gpu=per_gpu,
         )

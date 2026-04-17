@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """matcha.cli — command-line interface."""
 
 import argparse
