@@ -57,6 +57,7 @@ def session_start_record(
         "hostname": socket.gethostname(),
         "driver_version": sampler.driver_version,
         "interval_ms": interval_ms,
+        "energy_source": sampler.energy_source,
         "gpus": [
             {"idx": idx, "uuid": uuid, "name": name}
             for idx, uuid, name in zip(
@@ -112,5 +113,6 @@ def session_end_record(
         "total_samples": result.total_samples,
         "total_steps": total_steps,
         "energy_per_step_j": round(energy_per_step, 3) if total_steps else None,
+        "energy_source": result.energy_source,
         "gpus": _per_gpu_list(result.per_gpu),
     }

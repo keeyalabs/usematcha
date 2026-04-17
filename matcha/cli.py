@@ -227,8 +227,9 @@ def _monitor_cmd(args):
 def _add_common_flags(p):
     p.add_argument("--gpus", type=str, default="all",
                    help="GPU indices: all, 0, or 0,1,2 (default: all)")
-    p.add_argument("--interval", type=int, default=100,
-                   help="Sampling interval ms (default: 100)")
+    p.add_argument("--interval", type=int, default=500,
+                   help="Peak-power poll interval ms (default: 500). "
+                        "Energy uses the hardware counter and is independent of this.")
     p.add_argument("--json", action="store_true",
                    help="Emit structured JSONL records")
     p.add_argument("--output", type=str, default=None,

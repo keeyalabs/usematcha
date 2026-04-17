@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-04-17
+
+### Changed
+- **Energy now read from NVML's hardware accumulator** (`nvmlDeviceGetTotalEnergyConsumption`, Volta+). Per-step and session energy are exact counter deltas — no trapezoidal integration error, no per-step edge bias, and no measurable overhead from the previous tight polling loop.
+- Default `--interval` raised from 100 ms to 500 ms. It now controls only peak-power polling; energy accuracy is independent of it.
+- `session_start` and `session_end` JSONL records now include `energy_source` (`"counter"` or `"polled"`).
+
+### Fixed
+- Measurable per-step overhead (~30-50% observed on single-H100 RunPod instances) caused by 100 ms NVML polling. Counter-based energy eliminates it.
+
+### Compatibility
+- Falls back to trapezoidal integration of polled power samples if the hardware counter is unavailable (pre-Volta GPUs). Public schema and CLI flags unchanged.
+
 ## [0.2.0] — 2026-04-17
 
 ### Added
