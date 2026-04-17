@@ -1,25 +1,22 @@
-"""
-matcha.cli — Command-line interface.
-
-Copyright (c) 2025 Keeya Labs. All rights reserved.
-
-Usage:
-    matcha run torchrun --standalone --nproc_per_node=1 train_gpt.py
-    matcha wrap torchrun --standalone --nproc_per_node=1 train_gpt.py
-    matcha monitor
-"""
+"""matcha.cli — command-line interface."""
 
 import argparse
+import os
+import re
+import signal
 import subprocess
 import sys
-import re
-import time
-import signal
-import os
-from typing import Optional
+import uuid
+from typing import Dict, List, Optional
 
-from ._engine import _Collector
-from ._output import Printer
+from ._engine import PowerSampler
+from . import _monitor
+from ._jsonl import (
+    JsonlEmitter,
+    session_start_record,
+    step_record,
+    session_end_record,
+)
 from . import __version__
 
 _PATTERNS = [
@@ -43,7 +40,6 @@ def _detect(line: str) -> Optional[int]:
 
 
 def _parse_gpus(val: str):
-    """Parse GPU argument: 'all', single int, or comma-separated list."""
     if val == "all":
         return -1
     if "," in val:
@@ -51,44 +47,107 @@ def _parse_gpus(val: str):
     return int(val)
 
 
-def _make_collector(args):
-    """Create a _Collector from parsed args."""
-    gpus = _parse_gpus(args.gpus)
-    return _Collector(_gpus=gpus, _iv=args.interval)
+def _parse_labels(pairs: Optional[List[str]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if not pairs:
+        return out
+    for p in pairs:
+        if "=" not in p:
+            raise SystemExit(f"matcha: --label expects KEY=VALUE, got: {p!r}")
+        k, v = p.split("=", 1)
+        k = k.strip()
+        if not k:
+            raise SystemExit(f"matcha: --label key cannot be empty: {p!r}")
+        out[k] = v
+    return out
+
+
+def _make_sampler(args) -> PowerSampler:
+    return PowerSampler(gpu_indices=_parse_gpus(args.gpus), interval_ms=args.interval)
+
+
+def _resolve_run_id(args) -> str:
+    return args.run_id or os.environ.get("MATCHA_RUN_ID") or uuid.uuid4().hex[:12]
+
+
+def _make_emitter(args, default_stream) -> Optional[JsonlEmitter]:
+    if not (args.json or args.output):
+        return None
+    return JsonlEmitter(args.output, default_stream=default_stream)
+
+
+def _human_summary(s) -> str:
+    return (
+        f"matcha_energy gpus:{s.gpu_name} total:{s.total_energy_j:.0f}J ({s.energy_wh:.2f}Wh) "
+        f"duration:{s.total_duration_s:.1f}s avg_power:{s.avg_power_w:.0f}W "
+        f"peak_power:{s.peak_power_w:.0f}W samples:{s.total_samples}"
+    )
 
 
 def _run(args):
-    """Run a command, append energy summary at the end. Zero overhead — no stdout piping."""
-    c = _make_collector(args)
-    c.start()
+    """Run a command, report total GPU energy at the end. No stdout piping."""
+    # JSON-to-stdout without --output would not conflict here (child owns its own stdout),
+    # but keep the UX consistent with `wrap`: require --output when --json is set.
+    if args.json and not args.output:
+        # `run` can safely emit to stdout since the child process has its own stdout —
+        # but we still print the human summary afterwards, which would mix. Send to stderr.
+        emitter = JsonlEmitter(None, default_stream=sys.stderr)
+    else:
+        emitter = _make_emitter(args, default_stream=sys.stdout)
+
+    labels = _parse_labels(args.label)
+    run_id = _resolve_run_id(args)
+
+    sampler = _make_sampler(args)
+    sampler.start()
+
+    if emitter:
+        emitter.emit(
+            session_start_record(run_id, sampler, args.command, labels, args.interval)
+        )
 
     proc = subprocess.Popen(args.command)
-
     orig = signal.signal(signal.SIGINT, lambda s, f: proc.send_signal(signal.SIGINT))
 
     try:
         proc.wait()
     finally:
         signal.signal(signal.SIGINT, orig)
-        s = c.stop()
+        s = sampler.stop()
 
-        print(
-            f"matcha_energy gpus:{s.gpu_name} total:{s.total_energy_j:.0f}J ({s.energy_wh:.2f}Wh) "
-            f"duration:{s.total_duration_s:.1f}s avg_power:{s.avg_power_w:.0f}W "
-            f"peak_power:{s.peak_power_w:.0f}W samples:{s.total_samples}"
-        )
+        if emitter:
+            emitter.emit(session_end_record(run_id, s, total_steps=0))
+            emitter.close()
+
+        print(_human_summary(s))
 
     return proc.returncode
 
 
 def _wrap(args):
-    """Run a command, append energy data to each step line."""
-    c = _make_collector(args)
-    c.start()
+    """Run a command; append per-step energy to stdout or emit structured records."""
+    if args.json and not args.output:
+        raise SystemExit(
+            "matcha: `wrap --json` needs --output PATH so structured records don't "
+            "mix with the training process stdout. Example: --output run.jsonl"
+        )
+
+    emitter = _make_emitter(args, default_stream=None)
+    labels = _parse_labels(args.label)
+    run_id = _resolve_run_id(args)
+
+    sampler = _make_sampler(args)
+    sampler.start()
+
+    if emitter:
+        emitter.emit(
+            session_start_record(run_id, sampler, args.command, labels, args.interval)
+        )
 
     last: Optional[int] = None
     last_line: Optional[str] = None
     active = False
+    total_steps = 0
 
     proc = subprocess.Popen(
         args.command,
@@ -98,15 +157,25 @@ def _wrap(args):
         bufsize=1,
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
     )
-
     orig = signal.signal(signal.SIGINT, lambda s, f: proc.send_signal(signal.SIGINT))
 
-    def _fmt_energy(e, step_gap: int) -> str:
+    def _fmt_inline(e, step_gap: int) -> str:
         per_step = e.energy_j / max(step_gap, 1)
         return (
             f"energy:{per_step:.1f}J/step "
             f"avg_power:{e.avg_power_w:.0f}W peak_power:{e.peak_power_w:.0f}W"
         )
+
+    def _close_step(det_or_none):
+        nonlocal active, last, last_line, total_steps
+        if active and last is not None:
+            e = sampler.end_step(last)
+            step_gap = max((det_or_none - last), 1) if det_or_none is not None else 1
+            if emitter:
+                emitter.emit(step_record(run_id, e, step_gap))
+            else:
+                print(f"{last_line} {_fmt_inline(e, step_gap)}")
+            total_steps += 1
 
     try:
         for line in proc.stdout:
@@ -114,61 +183,59 @@ def _wrap(args):
             det = _detect(line)
 
             if det is not None:
-                if active and last is not None:
-                    e = c.mark_end(last)
-                    step_gap = max(det - last, 1)
-                    print(f"{last_line} {_fmt_energy(e, step_gap)}")
-                elif last_line is not None:
+                if active:
+                    _close_step(det)
+                elif last_line is not None and not emitter:
                     print(last_line)
-                c.mark_start()
+                sampler.begin_step()
                 active = True
                 last = det
                 last_line = line
             else:
-                print(line)
-                sys.stdout.flush()
+                if not emitter:
+                    print(line)
+                    sys.stdout.flush()
 
-        # Final step
-        if active and last is not None:
-            e = c.mark_end(last)
-            print(f"{last_line} {_fmt_energy(e, 1)}")
-
+        _close_step(None)
         proc.wait()
     finally:
         signal.signal(signal.SIGINT, orig)
-        s = c.stop()
+        s = sampler.stop()
 
-        print(
-            f"matcha_energy gpus:{s.gpu_name} total:{s.total_energy_j:.0f}J ({s.energy_wh:.2f}Wh) "
-            f"duration:{s.total_duration_s:.1f}s avg_power:{s.avg_power_w:.0f}W "
-            f"peak_power:{s.peak_power_w:.0f}W samples:{s.total_samples}"
-        )
+        if emitter:
+            emitter.emit(session_end_record(run_id, s, total_steps=total_steps))
+            emitter.close()
+
+        print(_human_summary(s))
 
     return proc.returncode
 
 
-def _monitor(args):
-    """Monitor GPU power continuously without running a command."""
-    c = _make_collector(args)
-    c.start()
+def _monitor_cmd(args):
+    """Live per-GPU monitor (nvidia-smi replacement)."""
+    gpus = _parse_gpus(args.gpus)
+    if gpus == -1:
+        indices = None
+    elif isinstance(gpus, int):
+        indices = [gpus]
+    else:
+        indices = list(gpus)
+    return _monitor.run(indices, args.interval)
 
-    pr = Printer()
-    pr.header(c.gpu_name, c.power_limit_w, args.interval)
 
-    print(f"  \033[2mmonitoring {c.gpu_name} — press Ctrl+C to stop\033[0m\n")
-
-    try:
-        step = 0
-        c.mark_start()
-        while True:
-            time.sleep(args.window)
-            pr.step(c.mark_end(step))
-            step += 1
-            c.mark_start()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        pr.summary(c.stop())
+def _add_common_flags(p):
+    p.add_argument("--gpus", type=str, default="all",
+                   help="GPU indices: all, 0, or 0,1,2 (default: all)")
+    p.add_argument("--interval", type=int, default=100,
+                   help="Sampling interval ms (default: 100)")
+    p.add_argument("--json", action="store_true",
+                   help="Emit structured JSONL records")
+    p.add_argument("--output", type=str, default=None,
+                   help="Write JSONL records to this file (implies --json)")
+    p.add_argument("--label", action="append", default=None, metavar="KEY=VALUE",
+                   help="Attach a label to the run (repeatable)")
+    p.add_argument("--run-id", dest="run_id", type=str, default=None,
+                   help="Stable run ID (or set MATCHA_RUN_ID)")
 
 
 def main():
@@ -180,19 +247,18 @@ def main():
     sub = parser.add_subparsers(dest="cmd")
 
     rp = sub.add_parser("run", help="Run a command and report total GPU energy at the end")
-    rp.add_argument("--gpus", type=str, default="all", help="GPU indices: all, 0, or 0,1,2 (default: all)")
-    rp.add_argument("--interval", type=int, default=100, help="Sampling interval ms")
+    _add_common_flags(rp)
     rp.add_argument("command", nargs=argparse.REMAINDER)
 
     wp = sub.add_parser("wrap", help="Run a training script with per-step energy reporting")
-    wp.add_argument("--gpus", type=str, default="all", help="GPU indices: all, 0, or 0,1,2 (default: all)")
-    wp.add_argument("--interval", type=int, default=100, help="Sampling interval ms")
+    _add_common_flags(wp)
     wp.add_argument("command", nargs=argparse.REMAINDER)
 
-    mp = sub.add_parser("monitor", help="Monitor GPU power continuously")
-    mp.add_argument("--gpus", type=str, default="all", help="GPU indices: all, 0, or 0,1,2 (default: all)")
-    mp.add_argument("--interval", type=int, default=100)
-    mp.add_argument("--window", type=float, default=1.0, help="Report window seconds")
+    mp = sub.add_parser("monitor", help="Live per-GPU power monitor")
+    mp.add_argument("--gpus", type=str, default="all",
+                    help="GPU indices: all, 0, or 0,1,2 (default: all)")
+    mp.add_argument("--interval", type=int, default=500,
+                    help="Refresh interval ms (default: 500)")
 
     args = parser.parse_args()
 
@@ -209,7 +275,7 @@ def main():
             args.command = args.command[1:]
         sys.exit(_wrap(args))
     elif args.cmd == "monitor":
-        _monitor(args)
+        sys.exit(_monitor_cmd(args))
     else:
         parser.print_help()
         sys.exit(1)
