@@ -97,9 +97,9 @@ matcha wrap --output run.jsonl \
 Training stdout passes through untouched. Records are appended to `run.jsonl`:
 
 ```jsonl
-{"type":"session_start","ts":"2026-04-17T15:19:18.004Z","run_id":"3f7a9b1c4e2d","matcha_version":"0.2.0","hostname":"h100-node-4","driver_version":"535.104.12","interval_ms":100,"gpus":[{"idx":0,"uuid":"GPU-f364...","name":"NVIDIA H100 80GB HBM3"}, ... ],"cmd":["torchrun","--standalone","--nproc_per_node=8","train_gpt.py"],"labels":{"team":"capacity","config":"lr_3e-4","seed":"42"}}
+{"type":"session_start","ts":"2026-04-17T15:19:18.004Z","run_id":"3f7a9b1c4e2d","matcha_version":"0.2.1","hostname":"h100-node-4","driver_version":"535.104.12","interval_ms":500,"energy_source":"counter","gpus":[{"idx":0,"uuid":"GPU-f364...","name":"NVIDIA H100 80GB HBM3"}, ... ],"cmd":["torchrun","--standalone","--nproc_per_node=8","train_gpt.py"],"labels":{"team":"capacity","config":"lr_3e-4","seed":"42"}}
 {"type":"step","ts":"2026-04-17T15:19:18.616Z","run_id":"3f7a9b1c4e2d","step":1,"step_gap":1,"energy_j":2354.0,"energy_per_step_j":2354.0,"duration_s":0.612,"avg_power_w":3847.0,"peak_power_w":4120.0,"gpus":[{"idx":0,"energy_j":323.5,"avg_power_w":528.6,"peak_power_w":540.0}, ... ]}
-{"type":"session_end","ts":"2026-04-17T15:22:41.104Z","run_id":"3f7a9b1c4e2d","total_energy_j":778168.0,"energy_wh":216.16,"duration_s":203.1,"avg_power_w":3832.0,"peak_power_w":4120.0,"total_samples":2031,"total_steps":20000,"energy_per_step_j":38.91,"gpus":[ ... ]}
+{"type":"session_end","ts":"2026-04-17T15:22:41.104Z","run_id":"3f7a9b1c4e2d","total_energy_j":778168.0,"energy_wh":216.16,"duration_s":203.1,"avg_power_w":3832.0,"peak_power_w":4120.0,"total_samples":406,"total_steps":20000,"energy_per_step_j":38.91,"energy_source":"counter","gpus":[ ... ]}
 ```
 
 Ingest example — ClickHouse:
@@ -117,7 +117,7 @@ cat run.jsonl | clickhouse-client --query "INSERT INTO energy_steps FORMAT JSONE
 | `--label KEY=VALUE` | Attach a label to the run. Repeatable. |
 | `--run-id ID` | Stable run identifier. Also honors `MATCHA_RUN_ID`. Auto-generated if unset. |
 | `--gpus` | `all`, a single index (`0`), or a list (`0,1,2,3`). Default: all visible GPUs. |
-| `--interval` | NVML sampling interval in ms. Default: 100. |
+| `--interval` | Peak-power poll interval in ms. Default: 500. Energy uses the hardware counter and is independent of this. |
 
 ---
 
@@ -146,7 +146,7 @@ Each step record carries a `gpus: [{idx, energy_j, avg_power_w, peak_power_w}, .
 
 ## How it works
 
-matcha runs a background thread that polls GPU power via NVML at a configurable interval (100 ms default). Energy is computed by trapezoidal integration of instantaneous power readings. The training process runs natively — matcha never touches stdin, stdout (in `run` mode), your model, or your training loop.
+matcha reads energy directly from NVML's hardware accumulator (`nvmlDeviceGetTotalEnergyConsumption`, available on Volta+). Per-step and session energy are exact counter deltas — millijoule-precise, no integration error, no measurable overhead. A low-rate background poller (default 500 ms) tracks peak power for reporting. Pre-Volta GPUs fall back to trapezoidal integration of polled samples. The training process runs natively — matcha never touches stdin, stdout (in `run` mode), your model, or your training loop.
 
 - **`run`** does not intercept the child's stdout — it's as close to zero-overhead as reasonable.
 - **`wrap`** pipes the child's stdout to detect step boundaries, then appends energy data inline or emits structured records.
