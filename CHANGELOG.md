@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-04-17
+
+### Fixed
+- **Per-step peak power could report below average power** when step duration was shorter than the sampling interval. `begin_step` and `end_step` now read `nvmlDeviceGetPowerUsage` at each boundary in addition to the background sampler, guaranteeing ≥2 data points per step window. Peak is also floored at the counter-derived average (physical invariant: peak ≥ avg).
+- Same floor applied to session-level peak.
+
+### Changed
+- Default `--interval` returned to 100 ms. The 500 ms default in 0.2.1 was chosen to reduce overhead that turned out to be pod variance, not matcha overhead — dense polling is free and gives a richer peak signal.
+
 ## [0.2.1] — 2026-04-17
 
 ### Changed

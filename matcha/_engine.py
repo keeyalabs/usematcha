@@ -111,7 +111,7 @@ class PowerSampler:
     Peak power is tracked by a low-rate background poller.
     """
 
-    def __init__(self, gpu_indices: Union[int, List[int]] = -1, interval_ms: int = 500):
+    def __init__(self, gpu_indices: Union[int, List[int]] = -1, interval_ms: int = 100):
         if pynvml is None:
             raise ImportError("matcha requires nvidia-ml-py: pip install nvidia-ml-py")
 
@@ -131,6 +131,7 @@ class PowerSampler:
         self._session_start_energy_mj: List[int] = []
         self._step_start_t: Optional[float] = None
         self._step_start_energy_mj: Optional[List[int]] = None
+        self._step_start_powers: Optional[List[float]] = None
         self._step_start_sample_idx: int = 0
 
         self.gpu_name: str = ""
@@ -223,27 +224,40 @@ class PowerSampler:
     def begin_step(self) -> None:
         t = time.monotonic()
         energy_mj = self._read_energy_mj() if self._energy_counter_available else None
+        powers = self._read_per_gpu_power()
         with self._lock:
             self._step_start_t = t
             self._step_start_energy_mj = energy_mj
+            self._step_start_powers = powers
             self._step_start_sample_idx = len(self._samples)
 
     def end_step(self, step: int) -> StepResult:
         end_t = time.monotonic()
         end_energy_mj = self._read_energy_mj() if self._energy_counter_available else None
+        end_powers = self._read_per_gpu_power()
         with self._lock:
             start_t = self._step_start_t
             start_energy = self._step_start_energy_mj
+            start_powers = self._step_start_powers
             start_idx = self._step_start_sample_idx
             window_samples = self._samples[start_idx:]
             self._step_start_t = None
             self._step_start_energy_mj = None
+            self._step_start_powers = None
 
         duration_s = end_t - start_t if start_t else 0.0
 
+        # Boundary power reads guarantee ≥2 data points for peak even when
+        # step duration is shorter than the background sampling interval.
+        augmented = []
+        if start_powers is not None and start_t is not None:
+            augmented.append((start_t, start_powers))
+        augmented.extend(window_samples)
+        augmented.append((end_t, end_powers))
+
         per_gpu_peak = [0.0] * len(self._handles)
         step_peak_total_w = 0.0
-        for _, ws in window_samples:
+        for _, ws in augmented:
             total = 0.0
             for i, w in enumerate(ws):
                 if i < len(per_gpu_peak) and w > per_gpu_peak[i]:
@@ -258,12 +272,15 @@ class PowerSampler:
             for i, idx in enumerate(self.gpu_indices):
                 e_j = max(0.0, (end_energy_mj[i] - start_energy[i]) / 1000.0)
                 avg_w = e_j / duration_s if duration_s > 0 else 0.0
+                # Invariant: peak ≥ avg. If our sparse sampling hasn't seen a
+                # value that high, the true peak was at least the average.
+                peak_w = max(per_gpu_peak[i], avg_w)
                 per_gpu.append(GpuStats(
-                    idx=idx, energy_j=e_j, avg_power_w=avg_w, peak_power_w=per_gpu_peak[i]
+                    idx=idx, energy_j=e_j, avg_power_w=avg_w, peak_power_w=peak_w
                 ))
                 total_energy_j += e_j
             total_avg_w = total_energy_j / duration_s if duration_s > 0 else 0.0
-            total_peak_w = step_peak_total_w
+            total_peak_w = max(step_peak_total_w, total_avg_w)
         else:
             total_energy_j, total_avg_w, total_peak_w, per_gpu = _polled_stats(
                 window_samples, self.gpu_indices, duration_s, step_peak_total_w
@@ -293,13 +310,14 @@ class PowerSampler:
             for i, idx in enumerate(self.gpu_indices):
                 e_j = max(0.0, (end_energy_mj[i] - self._session_start_energy_mj[i]) / 1000.0)
                 avg_w = e_j / duration_s if duration_s > 0 else 0.0
-                peak = self._per_gpu_peak_w[i] if i < len(self._per_gpu_peak_w) else 0.0
+                polled_peak = self._per_gpu_peak_w[i] if i < len(self._per_gpu_peak_w) else 0.0
+                peak = max(polled_peak, avg_w)
                 per_gpu.append(GpuStats(
                     idx=idx, energy_j=e_j, avg_power_w=avg_w, peak_power_w=peak
                 ))
                 total_energy_j += e_j
             total_avg_w = total_energy_j / duration_s if duration_s > 0 else 0.0
-            total_peak_w = self._peak_total_w
+            total_peak_w = max(self._peak_total_w, total_avg_w)
         else:
             total_energy_j, total_avg_w, total_peak_w, per_gpu = _polled_stats(
                 self._samples, self.gpu_indices, duration_s, self._peak_total_w
