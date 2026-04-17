@@ -4,32 +4,56 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "usematcha"
-version = "0.1.0"
-description = "Energy observability for AI workloads"
+version = "0.2.0"
+description = "GPU energy observability for AI training workloads"
 readme = "README.md"
 requires-python = ">=3.9"
 license = "Apache-2.0"
-authors = [{name = "Keeya Labs", email = "jay@keeyalabs.com"}]
-keywords = ["gpu", "energy", "power", "training", "nvml", "observability"]
+license-files = ["LICENSE"]
+authors = [{ name = "Keeya Labs", email = "jay@keeyalabs.com" }]
+keywords = [
+    "gpu",
+    "energy",
+    "power",
+    "training",
+    "pytorch",
+    "nvml",
+    "observability",
+    "efficiency",
+    "sustainability",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: System Administrators",
     "Topic :: System :: Monitoring",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Environment :: Console",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
 ]
-dependencies = ["nvidia-ml-py"]
+dependencies = ["nvidia-ml-py>=12.0"]
 
 [project.urls]
 Homepage = "https://usematcha.dev"
+Documentation = "https://usematcha.dev"
+Repository = "https://github.com/keeyalabs/usematcha"
+Issues = "https://github.com/keeyalabs/usematcha/issues"
+Changelog = "https://github.com/keeyalabs/usematcha/blob/main/CHANGELOG.md"
 
 [project.scripts]
 matcha = "matcha.cli:main"
 
 [tool.setuptools]
 packages = ["matcha"]
+
+[tool.setuptools.package-data]
+matcha = ["py.typed"]

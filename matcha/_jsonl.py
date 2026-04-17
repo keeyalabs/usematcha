@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """matcha._jsonl — structured-record output."""
 
 import datetime
@@ -67,6 +68,18 @@ def session_start_record(
     }
 
 
+def _per_gpu_list(per_gpu) -> List[Dict[str, Any]]:
+    return [
+        {
+            "idx": g.idx,
+            "energy_j": round(g.energy_j, 3),
+            "avg_power_w": round(g.avg_power_w, 1),
+            "peak_power_w": round(g.peak_power_w, 1),
+        }
+        for g in per_gpu
+    ]
+
+
 def step_record(run_id: str, result: StepResult, step_gap: int) -> Dict[str, Any]:
     return {
         "type": "step",
@@ -79,6 +92,7 @@ def step_record(run_id: str, result: StepResult, step_gap: int) -> Dict[str, Any
         "duration_s": round(result.duration_s, 4),
         "avg_power_w": round(result.avg_power_w, 1),
         "peak_power_w": round(result.peak_power_w, 1),
+        "gpus": _per_gpu_list(result.per_gpu),
     }
 
 
@@ -98,4 +112,5 @@ def session_end_record(
         "total_samples": result.total_samples,
         "total_steps": total_steps,
         "energy_per_step_j": round(energy_per_step, 3) if total_steps else None,
+        "gpus": _per_gpu_list(result.per_gpu),
     }

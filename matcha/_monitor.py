@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """matcha._monitor — live per-GPU power monitor."""
 
 import sys
