@@ -178,9 +178,10 @@ def _wrap(args):
             session_start_record(run_id, sampler, args.command, labels, args.interval)
         )
 
+    # Attribution invariant: when a line `step:N/...` arrives, the work that
+    # produced it happened in the window since we last called begin_step.
+    # That window IS step N's work — label it N, print the energy on line N.
     last: Optional[int] = None
-    last_line: Optional[str] = None
-    pending_metrics: Dict[str, float] = {}
     active = False
     total_steps = 0
 
@@ -201,45 +202,47 @@ def _wrap(args):
             f"avg_power:{e.avg_power_w:.0f}W peak_power:{e.peak_power_w:.0f}W"
         )
 
-    def _close_step(det_or_none):
-        nonlocal active, last, last_line, total_steps
-        if active and last is not None:
-            e = sampler.end_step(last)
-            step_gap = max((det_or_none - last), 1) if det_or_none is not None else 1
-            if emitter:
-                emitter.emit(step_record(run_id, e, step_gap,
-                                         train_metrics=pending_metrics or None))
-            else:
-                # Metrics are already inline in last_line (we parsed them, didn't inject).
-                print(f"{last_line} {_fmt_inline(e, step_gap)}")
-            total_steps += 1
-
     try:
         for line in proc.stdout:
             line = line.rstrip("\n")
             det = _detect(line)
 
             if det is not None:
-                if active:
-                    _close_step(det)
-                elif last_line is not None and not emitter:
-                    print(last_line)
+                metrics = extract_metrics(line)
+                if metrics:
+                    sampler.update_train_metrics(metrics)
+                    if otlp:
+                        for k in metrics:
+                            otlp.note_key(k)
+
+                if active and last is not None:
+                    # Window since last begin_step = work that produced this
+                    # step-N line. Attribute to det, print on the current line.
+                    e = sampler.end_step(det)
+                    step_gap = max(det - last, 1)
+                    if emitter:
+                        emitter.emit(step_record(run_id, e, step_gap,
+                                                 train_metrics=metrics or None))
+                    else:
+                        print(f"{line} {_fmt_inline(e, step_gap)}")
+                    total_steps += 1
+                else:
+                    # First step line ever — no measurement window yet.
+                    if not emitter:
+                        print(line)
+
                 sampler.begin_step()
                 active = True
                 last = det
-                last_line = line
-                pending_metrics = extract_metrics(line)
-                if pending_metrics:
-                    sampler.update_train_metrics(pending_metrics)
-                    if otlp:
-                        for k in pending_metrics:
-                            otlp.note_key(k)
             else:
                 if not emitter:
                     print(line)
                     sys.stdout.flush()
 
-        _close_step(None)
+        # End of stream: we have an open begin_step with no matching end line
+        # (training exited or crashed mid-step). That partial window is not a
+        # complete step — drop it rather than mislabel it. Session totals in
+        # session_end still include this time, so no energy is lost.
         proc.wait()
     finally:
         signal.signal(signal.SIGINT, orig)
