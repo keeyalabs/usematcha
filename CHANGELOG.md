@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] — 2026-04-17
+
+### Added
+- **`matcha diff`** — compare runs recorded as JSONL. With two files, emits a side-by-side view with absolute and percent deltas on duration, energy, power, steps, and auto-extracted training metrics (train_loss, step_avg_ms, etc.). With three or more, pivots to a sweep table — one column per run, `*` marks the best value per row, column headers read from `--label config=...` if set else the filename stem. Layout is fully content-driven: GPU names normalize to short form (`8x H100`), energy auto-scales to J/kJ/MJ/GJ based on magnitude, and columns widen to fit longest header or value — no truncation.
+- **Straggler signal in diffs** — `max |per-gpu deviation from median|` surfaced as a row, so regressions in load balance across runs are visible alongside efficiency wins.
+
+### Fixed
+- **Off-by-one step attribution in `matcha wrap`.** Training scripts print `step:N/...` *after* step N's work finishes, so the window between `step:N-1` and `step:N` lines is step N's work, not step N-1's. Previously that window was labeled N-1 and the energy was appended to the N-1 line. Now the window is attributed to the newly-finished step and the inline energy suffix prints on the line that named it. First step line prints raw (no measurement window yet). End-of-stream partial windows are dropped rather than emitted as phantom steps — session totals in `session_end` still include that time, so no energy is lost. Removed `last_line` and `pending_metrics` bookkeeping that became unnecessary once attribution lined up with the line being printed.
+
 ## [0.2.3] — 2026-04-17
 
 ### Added

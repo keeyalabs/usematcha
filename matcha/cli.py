@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 
 from ._engine import PowerSampler
 from . import _monitor
+from . import _diff
 from ._jsonl import (
     JsonlEmitter,
     session_start_record,
@@ -313,6 +314,10 @@ def main():
     _add_common_flags(wp)
     wp.add_argument("command", nargs=argparse.REMAINDER)
 
+    dp = sub.add_parser("diff", help="Compare matcha JSONL runs (2 = pairwise, 3+ = sweep table)")
+    dp.add_argument("runs", nargs="+",
+                    help="JSONL files from `matcha --output` (2 for pairwise diff, 3+ for sweep)")
+
     mp = sub.add_parser("monitor", help="Live per-GPU power monitor")
     mp.add_argument("--gpus", type=str, default="all",
                     help="GPU indices: all, 0, or 0,1,2 (default: all)")
@@ -333,6 +338,8 @@ def main():
         if args.command[0] == "--":
             args.command = args.command[1:]
         sys.exit(_wrap(args))
+    elif args.cmd == "diff":
+        sys.exit(_diff.run(args.runs))
     elif args.cmd == "monitor":
         sys.exit(_monitor_cmd(args))
     else:
