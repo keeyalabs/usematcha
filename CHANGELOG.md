@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] — 2026-04-17
+
+### Added
+- **Prometheus `/metrics` endpoint** via `--prometheus [HOST]:PORT` on `run` and `wrap`. Exposes step-level metrics (`matcha_step_energy_joules`, `matcha_step_duration_seconds`, `matcha_step_peak_power_watts`, `matcha_step_gpu_energy_deviation_ratio` for straggler detection) plus running session counters. GPU-live gauges (`matcha_gpu_power_watts`, `matcha_gpu_energy_joules_total`) are also exposed for teams without DCGM-exporter. All user `--label KEY=VALUE` values become Prometheus labels.
+- **OTLP/HTTP push** via `--otlp URL [--otlp-header K=V] [--otlp-interval MS]` on `run` and `wrap`. Pushes the same metric set as the Prometheus endpoint to any OTel-compatible backend (Grafana Cloud, Honeycomb, Datadog, self-hosted collector). Requires the optional dependencies: `pip install 'usematcha[otlp]'`.
+- **Training metrics auto-extracted from stdout** in `wrap`. Numeric `key:value`, `key=value`, and HuggingFace-style `'key': value` pairs are parsed from step lines and surfaced as `matcha_metric_<key>` in Prometheus/OTLP and as a `train_metrics` block in JSONL step records. Works out of the box for parameter-golf / nanoGPT / modded-nanogpt / DeepSpeed / HF Trainer outputs. Unit suffixes (`ms`, `W`, `J`, `%`) are preserved in the key (`matcha_metric_train_time_ms`). NaN / Inf / non-numeric values are skipped. Matcha's own output fields (`energy`, `avg_power`, ...) are blacklisted to avoid re-ingestion if outputs are chained.
+
+### Changed
+- `matcha monitor` rendering stripped of ANSI colors and emojis for cleaner terminal capture and consistent rendering across shells. ASCII progress bar (`[####------]`) retained for at-a-glance power/TDP ratio. Live in-place refresh unchanged.
+
 ## [0.2.2] — 2026-04-17
 
 ### Fixed

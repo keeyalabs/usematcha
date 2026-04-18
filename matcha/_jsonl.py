@@ -81,8 +81,13 @@ def _per_gpu_list(per_gpu) -> List[Dict[str, Any]]:
     ]
 
 
-def step_record(run_id: str, result: StepResult, step_gap: int) -> Dict[str, Any]:
-    return {
+def step_record(
+    run_id: str,
+    result: StepResult,
+    step_gap: int,
+    train_metrics: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    r: Dict[str, Any] = {
         "type": "step",
         "ts": now_iso(),
         "run_id": run_id,
@@ -95,6 +100,9 @@ def step_record(run_id: str, result: StepResult, step_gap: int) -> Dict[str, Any
         "peak_power_w": round(result.peak_power_w, 1),
         "gpus": _per_gpu_list(result.per_gpu),
     }
+    if train_metrics:
+        r["train_metrics"] = train_metrics
+    return r
 
 
 def session_end_record(

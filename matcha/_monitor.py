@@ -14,29 +14,18 @@ except ImportError:
     pynvml = None
 
 
-_R = "\033[0m"
-_B = "\033[1m"
-_D = "\033[2m"
-_G = "\033[38;5;114m"
-_Y = "\033[38;5;221m"
-_C = "\033[38;5;117m"
-_W = "\033[38;5;255m"
-_X = "\033[38;5;245m"
-_E = "\033[38;5;210m"
-
 _UP = "\033[F"
 _CLR = "\033[K"
 _HIDE = "\033[?25l"
 _SHOW = "\033[?25h"
 
-_WIDTH = 76
+_WIDTH = 88
 
 
 def _bar(ratio: float, width: int = 10) -> str:
     ratio = max(0.0, min(1.0, ratio))
     filled = int(ratio * width)
-    color = _E if ratio > 0.85 else (_Y if ratio > 0.6 else _G)
-    return f"{color}{'█' * filled}{_D}{'░' * (width - filled)}{_R}"
+    return f"[{'#' * filled}{'-' * (width - filled)}]"
 
 
 def _fmt_elapsed(s: float) -> str:
@@ -65,7 +54,7 @@ def run(gpu_indices: Optional[List[int]], interval_ms: int) -> int:
         pynvml.nvmlInit()
     except Exception as e:
         print(
-            f"matcha: NVML init failed — is an NVIDIA GPU present with drivers installed? ({e})",
+            f"matcha: NVML init failed - is an NVIDIA GPU present with drivers installed? ({e})",
             file=sys.stderr,
         )
         return 1
@@ -92,13 +81,13 @@ def run(gpu_indices: Optional[List[int]], interval_ms: int) -> int:
         n_gpu = len(handles)
         sys.stdout.write(_HIDE)
         print()
-        print(f"  {_G}{_B}⚡ matcha monitor{_R} {_D}— live GPU power{_R}")
-        print(f"  {_X}{'─' * _WIDTH}{_R}")
+        print("  matcha monitor - live GPU power")
+        print(f"  {'-' * _WIDTH}")
         print(
-            f"  {_D}{'gpu':>3}  {'name':<26}  {'power':>13}  "
-            f"{'util':>4}  {'temp':>5}  {'mem':>11}{_R}"
+            f"  {'gpu':>3}  {'name':<26}  {'power':>13}  "
+            f"{'util':>4}  {'temp':>5}  {'mem':>11}  {'load':<12}"
         )
-        print(f"  {_X}{'─' * _WIDTH}{_R}")
+        print(f"  {'-' * _WIDTH}")
         for _ in range(n_gpu + 2):
             print()
 
@@ -153,22 +142,23 @@ def run(gpu_indices: Optional[List[int]], interval_ms: int) -> int:
                     ratio = (p / tdp) if tdp else 0.0
                     mem = f"{m:>4.1f}/{mt:>4.1f}G" if mt else f"{m:>4.1f}G"
                     sys.stdout.write(
-                        f"  {_W}{idx:>3}{_R}  "
-                        f"{_W}{nm:<26}{_R}  "
-                        f"{_C}{pw:>13}{_R}  "
-                        f"{_Y}{u:>3}%{_R}  "
-                        f"{_Y}{t:>3}°C{_R}  "
-                        f"{_X}{mem:>11}{_R}  {_bar(ratio)}"
+                        f"  {idx:>3}  "
+                        f"{nm:<26}  "
+                        f"{pw:>13}  "
+                        f"{u:>3}%  "
+                        f"{t:>4}C  "
+                        f"{mem:>11}  "
+                        f"{_bar(ratio)}"
                         f"{_CLR}\n"
                     )
 
-                sys.stdout.write(f"  {_X}{'─' * _WIDTH}{_R}{_CLR}\n")
+                sys.stdout.write(f"  {'-' * _WIDTH}{_CLR}\n")
                 elapsed = now - start
                 sys.stdout.write(
-                    f"  {_D}total{_R} {_C}{_B}{total_w:>5.0f}W{_R}   "
-                    f"{_D}peak{_R} {_Y}{peak_total_w:>5.0f}W{_R}   "
-                    f"{_D}elapsed{_R} {_W}{_fmt_elapsed(elapsed):>10}{_R}   "
-                    f"{_D}energy{_R} {_G}{_B}{_fmt_energy(total_energy_j)}{_R}"
+                    f"  total {total_w:>5.0f}W   "
+                    f"peak {peak_total_w:>5.0f}W   "
+                    f"elapsed {_fmt_elapsed(elapsed):>10}   "
+                    f"energy {_fmt_energy(total_energy_j)}"
                     f"{_CLR}\n"
                 )
                 sys.stdout.flush()
@@ -180,12 +170,12 @@ def run(gpu_indices: Optional[List[int]], interval_ms: int) -> int:
             elapsed = time.monotonic() - start
             avg = total_energy_j / elapsed if elapsed > 0 else 0.0
             print()
-            print(f"  {_X}{'─' * _WIDTH}{_R}")
-            print(f"  {_G}{_B}⚡ stopped{_R}")
-            print(f"  {_D}duration{_R}   {_W}{_fmt_elapsed(elapsed)}{_R}")
-            print(f"  {_D}energy{_R}     {_G}{_B}{_fmt_energy(total_energy_j)}{_R}")
-            print(f"  {_D}avg power{_R}  {_C}{avg:.1f}W{_R}")
-            print(f"  {_D}peak{_R}       {_Y}{peak_total_w:.1f}W{_R}")
+            print(f"  {'-' * _WIDTH}")
+            print("  stopped")
+            print(f"  duration   {_fmt_elapsed(elapsed)}")
+            print(f"  energy     {_fmt_energy(total_energy_j)}")
+            print(f"  avg power  {avg:.1f}W")
+            print(f"  peak       {peak_total_w:.1f}W")
             print()
     finally:
         try:

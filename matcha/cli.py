@@ -18,6 +18,9 @@ from ._jsonl import (
     step_record,
     session_end_record,
 )
+from ._prometheus import PromServer
+from ._otlp import OtlpExporter
+from ._metrics import extract_metrics
 from . import __version__
 
 _PATTERNS = [
@@ -102,6 +105,19 @@ def _run(args):
     sampler = _make_sampler(args)
     sampler.start()
 
+    prom = None
+    if args.prometheus:
+        prom = PromServer(sampler, run_id, labels, bind=args.prometheus)
+        url = prom.start()
+        print(f"matcha: prometheus endpoint at {url}", file=sys.stderr)
+
+    otlp = None
+    if args.otlp:
+        otlp = OtlpExporter(sampler, run_id, labels, args.otlp,
+                            headers=args.otlp_header, interval_ms=args.otlp_interval)
+        url = otlp.start()
+        print(f"matcha: otlp exporter pushing to {url}", file=sys.stderr)
+
     if emitter:
         emitter.emit(
             session_start_record(run_id, sampler, args.command, labels, args.interval)
@@ -114,6 +130,10 @@ def _run(args):
         proc.wait()
     finally:
         signal.signal(signal.SIGINT, orig)
+        if prom:
+            prom.stop()
+        if otlp:
+            otlp.stop()
         s = sampler.stop()
 
         if emitter:
@@ -140,6 +160,19 @@ def _wrap(args):
     sampler = _make_sampler(args)
     sampler.start()
 
+    prom = None
+    if args.prometheus:
+        prom = PromServer(sampler, run_id, labels, bind=args.prometheus)
+        url = prom.start()
+        print(f"matcha: prometheus endpoint at {url}", file=sys.stderr)
+
+    otlp = None
+    if args.otlp:
+        otlp = OtlpExporter(sampler, run_id, labels, args.otlp,
+                            headers=args.otlp_header, interval_ms=args.otlp_interval)
+        url = otlp.start()
+        print(f"matcha: otlp exporter pushing to {url}", file=sys.stderr)
+
     if emitter:
         emitter.emit(
             session_start_record(run_id, sampler, args.command, labels, args.interval)
@@ -147,6 +180,7 @@ def _wrap(args):
 
     last: Optional[int] = None
     last_line: Optional[str] = None
+    pending_metrics: Dict[str, float] = {}
     active = False
     total_steps = 0
 
@@ -173,8 +207,10 @@ def _wrap(args):
             e = sampler.end_step(last)
             step_gap = max((det_or_none - last), 1) if det_or_none is not None else 1
             if emitter:
-                emitter.emit(step_record(run_id, e, step_gap))
+                emitter.emit(step_record(run_id, e, step_gap,
+                                         train_metrics=pending_metrics or None))
             else:
+                # Metrics are already inline in last_line (we parsed them, didn't inject).
                 print(f"{last_line} {_fmt_inline(e, step_gap)}")
             total_steps += 1
 
@@ -192,6 +228,12 @@ def _wrap(args):
                 active = True
                 last = det
                 last_line = line
+                pending_metrics = extract_metrics(line)
+                if pending_metrics:
+                    sampler.update_train_metrics(pending_metrics)
+                    if otlp:
+                        for k in pending_metrics:
+                            otlp.note_key(k)
             else:
                 if not emitter:
                     print(line)
@@ -201,6 +243,10 @@ def _wrap(args):
         proc.wait()
     finally:
         signal.signal(signal.SIGINT, orig)
+        if prom:
+            prom.stop()
+        if otlp:
+            otlp.stop()
         s = sampler.stop()
 
         if emitter:
@@ -238,6 +284,14 @@ def _add_common_flags(p):
                    help="Attach a label to the run (repeatable)")
     p.add_argument("--run-id", dest="run_id", type=str, default=None,
                    help="Stable run ID (or set MATCHA_RUN_ID)")
+    p.add_argument("--prometheus", type=str, default=None, metavar="[HOST]:PORT",
+                   help="Expose a Prometheus /metrics endpoint (e.g. :9400)")
+    p.add_argument("--otlp", type=str, default=None, metavar="URL",
+                   help="Push metrics to an OTLP/HTTP collector (e.g. http://collector:4318)")
+    p.add_argument("--otlp-header", action="append", default=None, metavar="KEY=VALUE",
+                   help="Header for OTLP export (repeatable, e.g. api-key=...)")
+    p.add_argument("--otlp-interval", type=int, default=10000, metavar="MS",
+                   help="OTLP export interval in ms (default: 10000)")
 
 
 def main():
