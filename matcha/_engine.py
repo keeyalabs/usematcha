@@ -16,7 +16,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 try:
     with warnings.catch_warnings():
@@ -139,6 +139,20 @@ class PowerSampler:
         self.gpu_names: List[str] = []
         self.gpu_uuids: List[str] = []
         self.driver_version: str = ""
+
+        self.last_step: Optional[StepResult] = None
+        self.steps_completed: int = 0
+        self.session_step_energy_j: float = 0.0
+
+        # Training metrics parsed from the wrapped process's stdout
+        # (train_loss, lr, mfu, ...). Updated by the wrap loop via
+        # update_train_metrics. Sticky: old keys persist until overwritten
+        # so Prom/OTLP gauges stay continuous across sparse step lines.
+        self.last_train_metrics: Dict[str, float] = {}
+
+    def update_train_metrics(self, metrics: Dict[str, float]) -> None:
+        if metrics:
+            self.last_train_metrics = {**self.last_train_metrics, **metrics}
 
     @property
     def energy_source(self) -> str:
@@ -286,7 +300,7 @@ class PowerSampler:
                 window_samples, self.gpu_indices, duration_s, step_peak_total_w
             )
 
-        return StepResult(
+        result = StepResult(
             step=step,
             energy_j=total_energy_j,
             duration_s=duration_s,
@@ -294,6 +308,10 @@ class PowerSampler:
             peak_power_w=total_peak_w,
             per_gpu=per_gpu,
         )
+        self.last_step = result
+        self.steps_completed += 1
+        self.session_step_energy_j += total_energy_j
+        return result
 
     def stop(self) -> SessionResult:
         self._running = False
