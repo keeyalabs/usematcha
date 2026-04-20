@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""matcha._diff — compare two runs recorded as JSONL."""
+"""matcha.commands.diff — compare two runs recorded as JSONL."""
 
 import json
 import re

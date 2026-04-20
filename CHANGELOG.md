@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — unreleased
+
+### Added
+- **Python API** — `matcha.session()` context manager and `matcha.Session` class. Thin facade over the internal power sampler with lifecycle methods (`start` / `stop`, `step_begin` / `step_end`, `with s.step(i):` sugar), `update_metrics` passthrough for user-supplied scalars, and read-only introspection (`gpu_name`, `energy_source`, `last_step`, `steps_completed`, `result`, ...). Safe to construct on CPU-only hosts and in CI — NVML is only touched at `start()`. A module-level guard raises a clean error if a second session is started in the same process. Public API is exposed via `__getattr__` on the `matcha` package, so `import matcha` stays pynvml-free (~35ms cold import on Python 3.12).
+- **HuggingFace Trainer callback** — `matcha.callbacks.StepEnergyCallback`, behind the new optional extra `pip install 'usematcha[hf]'`. Measures only on the local-zero DDP rank (so 8-rank hosts don't 8x-count). Injects `matcha/energy_j`, `matcha/energy_step_j`, `matcha/power_avg_w`, `matcha/power_peak_w` into the Trainer's `logs` dict — the values flow into stdout, TensorBoard, and WandB automatically. Emits the standard `matcha_energy` summary line on `on_train_end`. Fails closed: if matcha can't init (no GPU, NVML flake, missing pynvml), the callback logs a warning and becomes a no-op — training is never affected. Externally-owned `Session` objects passed via `session=...` are respected (callback does not stop them). Dangling step windows from crashed hooks are cleaned up before `stop()` so session totals stay clean.
+
+### Notes
+- The programmatic Python API was intentionally removed in 0.2.0 with the reasoning that it conflicted with the CLI's "zero code changes" pitch. It returns in 0.3.0 as an **additive, opt-in** surface so framework integrations (HuggingFace Trainer today; Lightning / Ray / Accelerate planned) have a real code path. The CLI remains the primary entry point and stays fully zero-code — nothing about `matcha run`, `matcha wrap`, `matcha diff`, or `matcha monitor` has changed.
+
+### Compatibility
+- Fully additive. No CLI flags removed, no JSONL / Prometheus / OTLP schema changes, no breaking engine changes.
+- New optional extra: `pip install 'usematcha[hf]'` pulls `transformers>=4.30`. Core install is unchanged.
+
 ## [0.2.4] — 2026-04-17
 
 ### Added

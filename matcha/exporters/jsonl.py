@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""matcha._jsonl — structured-record output."""
+"""matcha.exporters.jsonl — structured-record output."""
 
 import datetime
 import json
@@ -7,8 +7,8 @@ import socket
 import sys
 from typing import Any, Dict, List, Optional, TextIO
 
-from . import __version__
-from ._engine import PowerSampler, SessionResult, StepResult
+from .. import __version__
+from .._engine import PowerSampler, SessionResult, StepResult
 
 
 def now_iso() -> str:

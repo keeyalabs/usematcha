@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""matcha._prometheus — Prometheus text-exposition endpoint.
+"""matcha.exporters.prometheus — Prometheus text-exposition endpoint.
 
 Exposes `/metrics` over HTTP for Prometheus scrapers. Reads live from
 NVML on each scrape; the handler is stateless beyond a reference to the
@@ -21,8 +21,8 @@ try:
 except ImportError:
     pynvml = None
 
-from ._engine import PowerSampler
-from . import __version__
+from .._engine import PowerSampler
+from .. import __version__
 
 
 _NAMESPACE = "matcha"

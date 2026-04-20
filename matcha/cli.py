@@ -11,17 +11,17 @@ import uuid
 from typing import Dict, List, Optional
 
 from ._engine import PowerSampler
-from . import _monitor
-from . import _diff
-from ._jsonl import (
+from .commands import monitor as _monitor
+from .commands import diff as _diff
+from .commands.stdout_metrics import extract_metrics
+from .exporters.jsonl import (
     JsonlEmitter,
     session_start_record,
     step_record,
     session_end_record,
 )
-from ._prometheus import PromServer
-from ._otlp import OtlpExporter
-from ._metrics import extract_metrics
+from .exporters.prometheus import PromServer
+from .exporters.otlp import OtlpExporter
 from . import __version__
 
 _PATTERNS = [
@@ -301,7 +301,7 @@ def _add_common_flags(p):
 def main():
     parser = argparse.ArgumentParser(
         prog="matcha",
-        description="⚡ matcha — GPU energy metering for AI training",
+        description="matcha — GPU energy metering for AI training",
     )
     parser.add_argument("--version", action="version", version=f"matcha {__version__}")
     sub = parser.add_subparsers(dest="cmd")
