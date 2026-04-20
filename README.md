@@ -1,5 +1,5 @@
 <h1 align="center">
-  <img src="docs/matcha.svg" alt="matcha" width="280">
+  <img src="https://raw.githubusercontent.com/keeyalabs/usematcha/main/docs/matcha.svg" alt="matcha" width="280">
 </h1>
 
 <p align="center">
@@ -114,20 +114,20 @@ matcha run --gpus 0,1,2,3 torchrun ...
 
 matcha reads energy directly from NVML's hardware accumulator (`nvmlDeviceGetTotalEnergyConsumption`, Volta+). Per-step and session energy are exact counter deltas — millijoule-precise, no integration error. A background poller plus boundary reads at each step transition track peak power. Pre-Volta GPUs fall back to trapezoidal integration. Training runs natively; matcha never touches your model or training loop.
 
-Full design in [ARCHITECTURE.md](ARCHITECTURE.md).
+Full design in [ARCHITECTURE.md](https://github.com/keeyalabs/usematcha/blob/main/ARCHITECTURE.md).
 
 ---
 
 <p align="center">
   <a href="https://docs.usematcha.dev">Documentation</a>
   &nbsp;·&nbsp;
-  <a href="CHANGELOG.md">Changelog</a>
+  <a href="https://github.com/keeyalabs/usematcha/blob/main/CHANGELOG.md">Changelog</a>
   &nbsp;·&nbsp;
-  <a href="ARCHITECTURE.md">Architecture</a>
+  <a href="https://github.com/keeyalabs/usematcha/blob/main/ARCHITECTURE.md">Architecture</a>
   &nbsp;·&nbsp;
-  <a href="CONTRIBUTING.md">Contributing</a>
+  <a href="https://github.com/keeyalabs/usematcha/blob/main/CONTRIBUTING.md">Contributing</a>
   &nbsp;·&nbsp;
-  <a href="SECURITY.md">Security</a>
+  <a href="https://github.com/keeyalabs/usematcha/blob/main/SECURITY.md">Security</a>
 </p>
 
 <p align="center">
