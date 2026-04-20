@@ -2,24 +2,16 @@
 """matcha.exporters.prometheus — Prometheus text-exposition endpoint.
 
 Exposes `/metrics` over HTTP for Prometheus scrapers. Reads live from
-NVML on each scrape; the handler is stateless beyond a reference to the
-running PowerSampler.
+the active backend on each scrape; the handler is stateless beyond a
+reference to the running ``PowerSampler``.
 
-Pull-only. For push (Grafana Cloud remote_write, OTLP), see future
-modules.
+Pull-only. For push (Grafana Cloud remote_write, OTLP), see
+``exporters.otlp``.
 """
 
 import threading
-import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Optional
-
-try:
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=FutureWarning)
-        import pynvml
-except ImportError:
-    pynvml = None
 
 from .._engine import PowerSampler
 from .. import __version__
@@ -50,35 +42,30 @@ def _render(sampler: PowerSampler, run_id: str, user_labels: Dict[str, str]) -> 
     def emit(name, labels, value):
         lines.append(f"{_NAMESPACE}_{name}{_fmt_labels(labels)} {value}")
 
-    base = {"run_id": run_id, **user_labels}
+    # The ``backend`` label lets multi-vendor fleets slice by vendor
+    # ("where did AMD regress?") without having to join on name.
+    base = {"run_id": run_id, "backend": sampler.backend_name, **user_labels}
 
     metric("info", "gauge", "matcha build information")
     emit("info", {**base, "version": __version__, "energy_source": sampler.energy_source}, 1)
 
-    if not sampler._handles:
+    backend = sampler.backend
+    if backend is None or backend.device_count == 0:
         return "\n".join(lines) + "\n"
 
+    n = backend.device_count
     powers, utils, temps, mem_used, energies_j = [], [], [], [], []
-    for h in sampler._handles:
-        try:
-            powers.append(pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0)
-        except pynvml.NVMLError:
-            powers.append(0.0)
-        try:
-            utils.append(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
-        except pynvml.NVMLError:
-            utils.append(0)
-        try:
-            temps.append(pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU))
-        except pynvml.NVMLError:
-            temps.append(0)
-        try:
-            mem_used.append(pynvml.nvmlDeviceGetMemoryInfo(h).used)
-        except pynvml.NVMLError:
-            mem_used.append(0)
-        try:
-            energies_j.append(pynvml.nvmlDeviceGetTotalEnergyConsumption(h) / 1000.0)
-        except pynvml.NVMLError:
+    for i in range(n):
+        powers.append(backend.read_power_w(i))
+        utils.append(backend.read_utilization_pct(i))
+        temps.append(backend.read_temperature_c(i))
+        mem_used.append(backend.read_memory_used_bytes(i))
+        if backend.has_energy_counter:
+            try:
+                energies_j.append(backend.read_energy_mj(i) / 1000.0)
+            except Exception:
+                energies_j.append(0.0)
+        else:
             energies_j.append(0.0)
 
     metric("gpu_power_watts", "gauge", "Instantaneous GPU power draw in watts")
@@ -97,10 +84,11 @@ def _render(sampler: PowerSampler, run_id: str, user_labels: Dict[str, str]) -> 
     for idx, m in zip(sampler.gpu_indices, mem_used):
         emit("gpu_memory_used_bytes", {**base, "gpu": str(idx)}, m)
 
-    metric("gpu_energy_joules_total", "counter",
-           "Cumulative GPU energy consumption since driver boot, in joules (NVML hardware counter)")
-    for idx, e in zip(sampler.gpu_indices, energies_j):
-        emit("gpu_energy_joules_total", {**base, "gpu": str(idx)}, e)
+    if backend.has_energy_counter:
+        metric("gpu_energy_joules_total", "counter",
+               "Cumulative GPU energy consumption since driver boot, in joules (hardware counter)")
+        for idx, e in zip(sampler.gpu_indices, energies_j):
+            emit("gpu_energy_joules_total", {**base, "gpu": str(idx)}, e)
 
     total_power = sum(powers)
     metric("power_watts", "gauge", "Total instantaneous power across all sampled GPUs")

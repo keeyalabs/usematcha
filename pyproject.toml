@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "usematcha"
-version = "0.3.0rc1"
+version = "0.3.0"
 description = "GPU energy observability for AI training workloads"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,7 +31,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
     "Environment :: GPU :: NVIDIA CUDA",
+    "Environment :: GPU",
     "Environment :: Console",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -40,6 +42,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Typing :: Typed",
 ]
+# nvidia-ml-py is kept as a default dependency because it is a pure-Python
+# wrapper (installs cleanly on every platform, including macOS and AMD-only
+# Linux hosts) and the NVML backend is the most common path for matcha users.
+# On non-NVIDIA hosts it simply fails the init probe and auto-detection falls
+# through to the right backend (ROCm, Intel, Apple Silicon).
 dependencies = ["nvidia-ml-py>=12.0"]
 
 [project.optional-dependencies]
@@ -51,6 +58,18 @@ otlp = [
 # Kept optional so `pip install usematcha` stays transformers-free for
 # users who only want the CLI or the bare Python API.
 hf = ["transformers>=4.30"]
+# Hardware backend extras. These are intentionally empty today:
+#   * AMD and Intel backends shell out to their vendor CLI
+#     (``rocm-smi`` / ``xpu-smi``) — nothing on PyPI to pull in.
+#   * Apple Silicon uses stdlib ctypes against Darwin's IOReport
+#     framework (``/usr/lib/libIOReport.dylib``) — again no PyPI deps.
+# They exist as named extras so users can declare intent
+# (``pip install 'usematcha[amd]'``) and so future Python-binding
+# migrations (pyrsmi for AMD, pyze_l0 for Intel) can add dependencies
+# without changing the install incantation.
+amd = []
+intel = []
+mac = []
 
 [project.urls]
 Homepage = "https://usematcha.dev"
@@ -65,6 +84,7 @@ matcha = "matcha.cli:main"
 [tool.setuptools]
 packages = [
     "matcha",
+    "matcha._backends",
     "matcha.callbacks",
     "matcha.exporters",
     "matcha.commands",

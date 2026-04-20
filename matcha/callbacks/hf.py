@@ -23,10 +23,11 @@ trace. Cross-host aggregation (multi-node training) is not this
 callback's job; scrape the per-host Prometheus or JSONL outputs
 instead.
 
-Failure policy: if matcha can't init (no NVIDIA GPU, NVML flake,
-missing pynvml), the callback logs a warning and becomes a no-op for
-the rest of training. We never raise from a hook — energy metering is
-instrumentation, not critical training infrastructure.
+Failure policy: if matcha can't init (no supported GPU of any vendor —
+NVIDIA / AMD / Intel / Apple Silicon — or a driver / CLI flake), the
+callback logs a warning and becomes a no-op for the rest of training.
+We never raise from a hook — energy metering is instrumentation, not
+critical training infrastructure.
 """
 
 from __future__ import annotations
@@ -55,9 +56,11 @@ class StepEnergyCallback(TrainerCallback):
         gpus: GPUs to monitor. ``"all"`` (default), an int index, a list
             of indices, or ``-1``. Only the local-zero rank measures;
             other ranks no-op.
-        interval_ms: Background peak-power polling interval. Energy on
-            Volta+ is read from the NVML hardware counter and is
-            independent of this value.
+        interval_ms: Background peak-power polling interval. On backends
+            with a hardware energy counter (NVML Volta+) energy accuracy
+            is independent of this interval; on polled backends (ROCm /
+            Intel / Apple Silicon) a shorter interval tightens
+            integration.
         log_prefix: Prefix for metric keys pushed into the Trainer's
             ``logs`` dict. Default ``"matcha/"`` to mirror HF's own
             ``train/``, ``eval/`` convention. Set to ``""`` for bare
