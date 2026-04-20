@@ -5,7 +5,7 @@
 <h1 align="center">matcha</h1>
 
 <p align="center">
-  <b>GPU energy observability for AI training.</b>
+  <b>GPU energy observability for AI training & fine-tuning.</b>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  Measure energy per training run and per step — from the GPU's hardware counter, not sampled power.
+  Measure energy per training run and per step — from the GPU's hardware metrics.
   Works on NVIDIA, AMD, Intel, and Apple Silicon.
   Zero-code CLI, Python API, and HuggingFace Trainer callback.
   Structured output for any observability stack.
@@ -146,8 +146,4 @@ Full design in [ARCHITECTURE.md](https://github.com/keeyalabs/usematcha/blob/mai
   <a href="https://github.com/keeyalabs/usematcha/blob/main/CONTRIBUTING.md">Contributing</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/keeyalabs/usematcha/blob/main/SECURITY.md">Security</a>
-</p>
-
-<p align="center">
-  Built by <a href="https://keeyalabs.com">Keeya Labs</a>. Apache 2.0.
 </p>
