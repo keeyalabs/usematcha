@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""matcha._otlp — OTLP push metrics export.
+"""matcha.exporters.otlp — OTLP push metrics export.
 
-Pushes the same metrics exposed by `_prometheus` to an OTel collector
+Pushes the same metrics exposed by `exporters.prometheus` to an OTel collector
 over OTLP/HTTP. Uses the OpenTelemetry SDK; installed as an optional
 extra (`pip install usematcha[otlp]`).
 
@@ -20,8 +20,8 @@ try:
 except ImportError:
     pynvml = None
 
-from ._engine import PowerSampler
-from . import __version__
+from .._engine import PowerSampler
+from .. import __version__
 
 
 def _import_otel():

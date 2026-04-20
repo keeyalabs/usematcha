@@ -47,6 +47,10 @@ otlp = [
     "opentelemetry-sdk>=1.20",
     "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
+# HuggingFace Trainer integration (matcha.callbacks.StepEnergyCallback).
+# Kept optional so `pip install usematcha` stays transformers-free for
+# users who only want the CLI or the bare Python API.
+hf = ["transformers>=4.30"]
 
 [project.urls]
 Homepage = "https://usematcha.dev"
@@ -59,7 +63,12 @@ Changelog = "https://github.com/keeyalabs/usematcha/blob/main/CHANGELOG.md"
 matcha = "matcha.cli:main"
 
 [tool.setuptools]
-packages = ["matcha"]
+packages = [
+    "matcha",
+    "matcha.callbacks",
+    "matcha.exporters",
+    "matcha.commands",
+]
 
 [tool.setuptools.package-data]
 matcha = ["py.typed"]

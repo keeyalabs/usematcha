@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""matcha._metrics — extract numeric training metrics from a stdout line.
+"""matcha.commands.stdout_metrics — extract numeric training metrics from a stdout line.
 
 Parses `key:value` and `key=value` pairs (with optional unit suffix), plus
 Python-dict-style `'key': value` used by HuggingFace Trainer. The numeric
