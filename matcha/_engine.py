@@ -1,29 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
-"""matcha._engine — GPU energy sampling.
+"""matcha._engine — vendor-agnostic GPU energy sampling.
 
-Energy is read from NVML's hardware accumulator
-(`nvmlDeviceGetTotalEnergyConsumption`, supported Volta+). Per-step and
-session energy are exact counter deltas — no integration error, no
-overhead from a tight polling loop.
+The engine is the same on every host: open a backend, run a low-rate
+power poller, bracket each step with boundary power + energy reads,
+and assemble ``StepResult`` / ``SessionResult`` records.
 
-A background thread still polls power at a low rate (default 500 ms) for
-peak-power tracking and per-GPU peak stats. If the hardware counter is
-unavailable, energy falls back to trapezoidal integration of the polled
-power samples.
+Vendor-specific logic lives entirely in ``matcha._backends.*`` — the
+engine only sees the ``Backend`` protocol. Swapping NVIDIA for AMD,
+Intel, or Apple Silicon changes nothing here.
+
+Energy source
+-------------
+
+When the active backend reports ``has_energy_counter=True`` (NVML on
+Volta+), per-step and session energy are exact counter deltas —
+millijoule-precise, no integration error, zero per-step overhead.
+Otherwise energy is trapezoidal integration of the polled power
+series. The ``energy_source`` field on ``SessionResult`` reports which
+path was taken.
 """
+
+from __future__ import annotations
 
 import threading
 import time
-import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
-try:
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=FutureWarning)
-        import pynvml
-except ImportError:
-    pynvml = None
+from ._backends import Backend, detect
 
 
 Sample = Tuple[float, List[float]]  # (monotonic_ts, [w_gpu0, w_gpu1, ...])
@@ -56,6 +60,7 @@ class SessionResult:
     peak_power_w: float
     total_samples: int
     energy_source: str = "counter"  # "counter" | "polled"
+    backend: str = "nvml"
     per_gpu: List[GpuStats] = field(default_factory=list)
 
     @property
@@ -66,7 +71,7 @@ class SessionResult:
 def _integrate_series(samples: List[Tuple[float, float]]) -> Tuple[float, float]:
     """Trapezoidal over (t, w) samples. Returns (energy_j, peak_w).
 
-    Used only when the hardware energy counter is unavailable.
+    Used when the backend has no hardware energy counter.
     """
     if len(samples) < 2:
         return 0.0, (samples[0][1] if samples else 0.0)
@@ -104,30 +109,39 @@ def _polled_stats(
 
 
 class PowerSampler:
-    """GPU energy + peak-power tracker.
+    """GPU energy + peak-power tracker, vendor-agnostic.
 
-    Energy is read directly from NVML's hardware accumulator
-    (millijoule-precise, no integration error, zero overhead per step).
-    Peak power is tracked by a low-rate background poller.
+    The sampler delegates every hardware read to a ``Backend``
+    (``matcha._backends``). Energy is read from the backend's hardware
+    counter when available; otherwise the engine integrates polled
+    power to derive energy. Peak power always comes from a low-rate
+    background poller plus per-step boundary reads — the boundary
+    reads guarantee ≥2 data points per step even when the step is
+    shorter than the sampling interval.
     """
 
-    def __init__(self, gpu_indices: Union[int, List[int]] = -1, interval_ms: int = 100):
-        if pynvml is None:
-            raise ImportError("matcha requires nvidia-ml-py: pip install nvidia-ml-py")
-
+    def __init__(
+        self,
+        gpu_indices: Union[int, List[int]] = -1,
+        interval_ms: int = 100,
+        backend: Optional[Backend] = None,
+    ):
         self._gpu_spec = gpu_indices
         self._interval_s = interval_ms / 1000.0
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._running = False
-        self._handles: List = []
+
+        # Backend is resolved at ``start()`` time (not construction) to
+        # mirror the old pynvml-lazy semantics: constructing a sampler
+        # on a CPU-only CI host must stay side-effect-free.
+        self._backend: Optional[Backend] = backend
 
         self._samples: List[Sample] = []
         self._peak_total_w = 0.0
         self._per_gpu_peak_w: List[float] = []
         self._session_start_t: Optional[float] = None
 
-        self._energy_counter_available = False
         self._session_start_energy_mj: List[int] = []
         self._step_start_t: Optional[float] = None
         self._step_start_energy_mj: Optional[List[int]] = None
@@ -150,59 +164,63 @@ class PowerSampler:
         # so Prom/OTLP gauges stay continuous across sparse step lines.
         self.last_train_metrics: Dict[str, float] = {}
 
+    # ---- public introspection (unchanged shape) --------------------------
+
+    @property
+    def backend(self) -> Optional[Backend]:
+        return self._backend
+
+    @property
+    def backend_name(self) -> str:
+        return self._backend.name if self._backend else ""
+
+    @property
+    def energy_source(self) -> str:
+        return (
+            "counter"
+            if (self._backend is not None and self._backend.has_energy_counter)
+            else "polled"
+        )
+
+    # ---- compatibility shim: some callers still read ``_handles`` --------
+    # Exporters that used to index into ``sampler._handles`` now use
+    # positional indices (0..device_count-1) against the backend. This
+    # property keeps any lingering ``len(sampler._handles)`` checks
+    # working until those call sites are fully migrated.
+    @property
+    def _handles(self) -> List[int]:
+        return list(range(self._backend.device_count)) if self._backend else []
+
     def update_train_metrics(self, metrics: Dict[str, float]) -> None:
         if metrics:
             self.last_train_metrics = {**self.last_train_metrics, **metrics}
 
-    @property
-    def energy_source(self) -> str:
-        return "counter" if self._energy_counter_available else "polled"
+    # ---- lifecycle -------------------------------------------------------
 
     def start(self) -> None:
-        try:
-            pynvml.nvmlInit()
-        except Exception as e:
-            raise RuntimeError(
-                "matcha: NVML init failed — is an NVIDIA GPU present "
-                f"with drivers installed? ({e})"
-            )
+        if self._backend is None:
+            self._backend = detect()
+        self._backend.init(self._gpu_spec)
 
-        count = pynvml.nvmlDeviceGetCount()
-        if self._gpu_spec == -1:
-            indices = list(range(count))
-        elif isinstance(self._gpu_spec, int):
-            indices = [self._gpu_spec]
-        else:
-            indices = list(self._gpu_spec)
+        self.gpu_indices = self._backend.device_indices
+        self.gpu_names = self._backend.device_names
+        self.gpu_uuids = self._backend.device_uuids
+        self.driver_version = self._backend.driver_version
 
-        self._handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in indices]
-        self.gpu_indices = indices
-        self._per_gpu_peak_w = [0.0] * len(self._handles)
+        n = self._backend.device_count
+        self._per_gpu_peak_w = [0.0] * n
 
-        def _decode(x):
-            return x.decode("utf-8") if isinstance(x, bytes) else x
+        first = self.gpu_names[0] if self.gpu_names else self._backend.name
+        self.gpu_name = f"{n}x {first}" if n > 1 else first
 
-        for h in self._handles:
-            self.gpu_names.append(_decode(pynvml.nvmlDeviceGetName(h)))
+        if self._backend.has_energy_counter:
             try:
-                self.gpu_uuids.append(_decode(pynvml.nvmlDeviceGetUUID(h)))
-            except pynvml.NVMLError:
-                self.gpu_uuids.append("")
-
-        try:
-            self.driver_version = _decode(pynvml.nvmlSystemGetDriverVersion())
-        except pynvml.NVMLError:
-            self.driver_version = ""
-
-        first = self.gpu_names[0]
-        self.gpu_name = f"{len(self._handles)}x {first}" if len(self._handles) > 1 else first
-
-        try:
-            self._session_start_energy_mj = self._read_energy_mj()
-            self._energy_counter_available = True
-        except pynvml.NVMLError:
-            self._energy_counter_available = False
-            self._session_start_energy_mj = []
+                self._session_start_energy_mj = self._read_energy_mj()
+            except Exception:
+                # Backend advertised a counter but the first read
+                # failed — demote to polled integration for the rest
+                # of the session rather than dying mid-run.
+                self._session_start_energy_mj = []
 
         self._session_start_t = time.monotonic()
         self._running = True
@@ -210,16 +228,14 @@ class PowerSampler:
         self._thread.start()
 
     def _read_per_gpu_power(self) -> List[float]:
-        powers: List[float] = []
-        for h in self._handles:
-            try:
-                powers.append(pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0)
-            except pynvml.NVMLError:
-                powers.append(0.0)
-        return powers
+        b = self._backend
+        assert b is not None
+        return [b.read_power_w(i) for i in range(b.device_count)]
 
     def _read_energy_mj(self) -> List[int]:
-        return [pynvml.nvmlDeviceGetTotalEnergyConsumption(h) for h in self._handles]
+        b = self._backend
+        assert b is not None
+        return [b.read_energy_mj(i) for i in range(b.device_count)]
 
     def _sample_loop(self) -> None:
         while self._running:
@@ -237,7 +253,8 @@ class PowerSampler:
 
     def begin_step(self) -> None:
         t = time.monotonic()
-        energy_mj = self._read_energy_mj() if self._energy_counter_available else None
+        has_counter = self._backend is not None and self._backend.has_energy_counter
+        energy_mj = self._read_energy_mj() if has_counter and self._session_start_energy_mj else None
         powers = self._read_per_gpu_power()
         with self._lock:
             self._step_start_t = t
@@ -247,7 +264,8 @@ class PowerSampler:
 
     def end_step(self, step: int) -> StepResult:
         end_t = time.monotonic()
-        end_energy_mj = self._read_energy_mj() if self._energy_counter_available else None
+        has_counter = self._backend is not None and self._backend.has_energy_counter
+        end_energy_mj = self._read_energy_mj() if has_counter and self._session_start_energy_mj else None
         end_powers = self._read_per_gpu_power()
         with self._lock:
             start_t = self._step_start_t
@@ -269,7 +287,8 @@ class PowerSampler:
         augmented.extend(window_samples)
         augmented.append((end_t, end_powers))
 
-        per_gpu_peak = [0.0] * len(self._handles)
+        n = self._backend.device_count if self._backend else 0
+        per_gpu_peak = [0.0] * n
         step_peak_total_w = 0.0
         for _, ws in augmented:
             total = 0.0
@@ -280,7 +299,7 @@ class PowerSampler:
             if total > step_peak_total_w:
                 step_peak_total_w = total
 
-        if self._energy_counter_available and start_energy is not None and end_energy_mj is not None:
+        if has_counter and start_energy is not None and end_energy_mj is not None:
             per_gpu: List[GpuStats] = []
             total_energy_j = 0.0
             for i, idx in enumerate(self.gpu_indices):
@@ -319,10 +338,11 @@ class PowerSampler:
             self._thread.join(timeout=2.0)
 
         end_t = time.monotonic()
-        end_energy_mj = self._read_energy_mj() if self._energy_counter_available else None
+        has_counter = self._backend is not None and self._backend.has_energy_counter
+        end_energy_mj = self._read_energy_mj() if has_counter and self._session_start_energy_mj else None
         duration_s = end_t - self._session_start_t if self._session_start_t else 0.0
 
-        if self._energy_counter_available and end_energy_mj is not None:
+        if has_counter and end_energy_mj is not None and self._session_start_energy_mj:
             per_gpu: List[GpuStats] = []
             total_energy_j = 0.0
             for i, idx in enumerate(self.gpu_indices):
@@ -341,10 +361,11 @@ class PowerSampler:
                 self._samples, self.gpu_indices, duration_s, self._peak_total_w
             )
 
-        try:
-            pynvml.nvmlShutdown()
-        except Exception:
-            pass
+        if self._backend is not None:
+            try:
+                self._backend.shutdown()
+            except Exception:
+                pass
 
         return SessionResult(
             gpu_name=self.gpu_name,
@@ -354,5 +375,6 @@ class PowerSampler:
             peak_power_w=total_peak_w,
             total_samples=len(self._samples),
             energy_source=self.energy_source,
+            backend=self._backend.name if self._backend else "",
             per_gpu=per_gpu,
         )

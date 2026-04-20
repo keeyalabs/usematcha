@@ -48,8 +48,10 @@ __all__ = [
 
 GpuSpec = Union[str, int, List[int], None]
 
-# NVML is process-global. Track the one active session to give a clean
-# error instead of a confusing NVML-level failure on concurrent use.
+# Hardware backends (NVML, ROCm, Intel, Apple Silicon) are all
+# process-global — the vendor libraries / CLIs don't tolerate two
+# concurrent consumers. Track the one active session to give a clean
+# error instead of a confusing backend-level failure.
 _active_lock = threading.Lock()
 _active_session: Optional["Session"] = None
 
@@ -91,17 +93,29 @@ class Session:
     Args:
         gpus: Which GPUs to monitor. ``"all"`` (default), an int index, a
             list of int indices, or ``-1`` (= all).
-        interval_ms: Background peak-power polling interval in ms. Energy
-            is read from the NVML hardware counter and is independent of
-            this interval on Volta+ GPUs.
+        interval_ms: Background peak-power polling interval in ms. On
+            backends with a hardware energy counter (NVML Volta+) energy
+            accuracy is independent of this interval; on polled backends
+            (ROCm / Intel / Apple Silicon) a shorter interval gives a
+            tighter integration.
+        backend: Optional backend name to force (``"nvml"``, ``"rocm"``,
+            ``"intel"``, ``"apple"``). Default auto-detects. Can also be
+            set via the ``MATCHA_BACKEND`` environment variable.
     """
 
-    def __init__(self, gpus: GpuSpec = "all", interval_ms: int = 100):
-        # Store config only. Defer PowerSampler instantiation to start() so
-        # Session() is safe to construct even when pynvml / NVIDIA drivers
-        # aren't present (tests, type-checking, docs builds, CPU hosts).
+    def __init__(
+        self,
+        gpus: GpuSpec = "all",
+        interval_ms: int = 100,
+        backend: Optional[str] = None,
+    ):
+        # Store config only. Defer backend resolution + PowerSampler
+        # instantiation to start() so Session() is safe to construct on
+        # hosts without any GPU driver (tests, type-checking, docs
+        # builds, CPU CI).
         self._gpu_spec = _resolve_gpus(gpus)
         self._interval_ms = interval_ms
+        self._backend_name = backend
         self._sampler: Optional[PowerSampler] = None
         self._started = False
         self._stopped = False
@@ -113,15 +127,22 @@ class Session:
     def start(self) -> "Session":
         """Start metering. Returns self so you can chain: ``Session().start()``.
 
-        Raises ImportError if ``nvidia-ml-py`` is not installed and RuntimeError
-        if NVML can't initialize (no NVIDIA GPU / drivers).
+        Auto-detects the GPU vendor (NVIDIA / AMD / Intel / Apple Silicon)
+        and opens the matching backend. Raises ``BackendUnavailable`` if no
+        supported GPU is present.
         """
         if self._started:
             raise RuntimeError("matcha: session already started")
         _acquire(self)
         try:
+            backend_obj = None
+            if self._backend_name:
+                from ._backends import detect as _detect
+                backend_obj = _detect(prefer=self._backend_name)
             self._sampler = PowerSampler(
-                gpu_indices=self._gpu_spec, interval_ms=self._interval_ms
+                gpu_indices=self._gpu_spec,
+                interval_ms=self._interval_ms,
+                backend=backend_obj,
             )
             self._sampler.start()
         except Exception:
@@ -234,6 +255,14 @@ class Session:
         return self._sampler.energy_source if self._sampler else "unknown"
 
     @property
+    def backend(self) -> str:
+        """Active hardware backend: ``"nvml"`` | ``"rocm"`` | ``"intel"`` | ``"apple"``.
+
+        Returns ``""`` before start().
+        """
+        return self._sampler.backend_name if self._sampler else ""
+
+    @property
     def gpu_name(self) -> str:
         return self._sampler.gpu_name if self._sampler else ""
 
@@ -267,7 +296,9 @@ class Session:
 
 @contextmanager
 def session(
-    gpus: GpuSpec = "all", interval_ms: int = 100
+    gpus: GpuSpec = "all",
+    interval_ms: int = 100,
+    backend: Optional[str] = None,
 ) -> Iterator[Session]:
     """Context manager: start a matcha session, stop it on exit.
 
@@ -278,8 +309,11 @@ def session(
                 with s.step(i):
                     train_step()
         print(s.result.total_energy_j)
+
+    ``backend`` pins a specific hardware backend (``"nvml"`` | ``"rocm"``
+    | ``"intel"`` | ``"apple"``); omit to auto-detect.
     """
-    s = Session(gpus=gpus, interval_ms=interval_ms)
+    s = Session(gpus=gpus, interval_ms=interval_ms, backend=backend)
     s.start()
     try:
         yield s
