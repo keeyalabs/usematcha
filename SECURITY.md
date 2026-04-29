@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please email **security@keeyalabs.com** with:
+Please email **jay@keeyalabs.com** with:
 
 - A description of the issue and how to reproduce it.
 - The matcha version you're running (`matcha --version`) and your Python / OS / NVIDIA driver versions.

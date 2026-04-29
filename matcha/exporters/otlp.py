@@ -10,15 +10,7 @@ and alerts transfer between scrape and push deployments.
 """
 
 import time
-import warnings
 from typing import Dict, List, Optional, Set
-
-try:
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=FutureWarning)
-        import pynvml
-except ImportError:
-    pynvml = None
 
 from .._engine import PowerSampler
 from .. import __version__
@@ -93,6 +85,7 @@ class OtlpExporter:
             "service.version": __version__,
             "matcha.run_id": self._run_id,
             "matcha.energy_source": self._sampler.energy_source,
+            "matcha.backend": self._sampler.backend_name,
             **{f"matcha.label.{k}": v for k, v in self._labels.items()},
         }
         resource = Resource.create(resource_attrs)
@@ -108,13 +101,12 @@ class OtlpExporter:
         # ---- GPU-live gauges (redundant with DCGM if they have it, cheap otherwise) ----
         def _power_cb(_options):
             from opentelemetry.metrics import Observation
+            backend = sampler.backend
+            if backend is None:
+                return []
             obs = []
-            for i, h in enumerate(sampler._handles):
-                try:
-                    w = pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0
-                except pynvml.NVMLError:
-                    w = 0.0
-                obs.append(Observation(w, {
+            for i in range(backend.device_count):
+                obs.append(Observation(backend.read_power_w(i), {
                     **base_attrs,
                     "gpu": str(sampler.gpu_indices[i]),
                     "name": sampler.gpu_names[i],
@@ -123,11 +115,14 @@ class OtlpExporter:
 
         def _energy_cb(_options):
             from opentelemetry.metrics import Observation
+            backend = sampler.backend
+            if backend is None or not backend.has_energy_counter:
+                return []
             obs = []
-            for i, h in enumerate(sampler._handles):
+            for i in range(backend.device_count):
                 try:
-                    e = pynvml.nvmlDeviceGetTotalEnergyConsumption(h) / 1000.0
-                except pynvml.NVMLError:
+                    e = backend.read_energy_mj(i) / 1000.0
+                except Exception:
                     e = 0.0
                 obs.append(Observation(e, {
                     **base_attrs, "gpu": str(sampler.gpu_indices[i])
@@ -140,7 +135,7 @@ class OtlpExporter:
         )
         meter.create_observable_counter(
             "matcha_gpu_energy_joules_total", callbacks=[_energy_cb],
-            description="Cumulative GPU energy (NVML hardware counter)", unit="J",
+            description="Cumulative GPU energy (hardware counter)", unit="J",
         )
 
         # ---- Step-level (the differentiator) ----

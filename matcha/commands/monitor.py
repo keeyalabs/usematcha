@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""matcha.commands.monitor — live per-GPU power monitor."""
+"""matcha.commands.monitor — live per-GPU power monitor.
+
+Backend-agnostic: on NVIDIA hosts it reads NVML, on AMD it reads
+rocm-smi, on Intel it reads xpu-smi, on Apple Silicon it reads
+Darwin's IOReport framework (via stdlib ctypes). All through
+``matcha._backends.detect()``.
+"""
 
 import sys
 import time
-import warnings
 from typing import List, Optional
 
-try:
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=FutureWarning)
-        import pynvml
-except ImportError:
-    pynvml = None
+from .._backends import BackendUnavailable, detect
 
 
 _UP = "\033[F"
@@ -46,42 +46,31 @@ def _fmt_energy(j: float) -> str:
 
 
 def run(gpu_indices: Optional[List[int]], interval_ms: int) -> int:
-    if pynvml is None:
-        print("matcha: nvidia-ml-py is required. pip install nvidia-ml-py", file=sys.stderr)
+    try:
+        backend = detect()
+    except BackendUnavailable as e:
+        print(f"matcha: {e}", file=sys.stderr)
         return 1
 
     try:
-        pynvml.nvmlInit()
+        backend.init(-1 if gpu_indices is None else gpu_indices)
     except Exception as e:
-        print(
-            f"matcha: NVML init failed - is an NVIDIA GPU present with drivers installed? ({e})",
-            file=sys.stderr,
-        )
+        print(f"matcha: backend {backend.name!r} init failed: {e}", file=sys.stderr)
         return 1
 
     try:
-        if gpu_indices is None:
-            gpu_indices = list(range(pynvml.nvmlDeviceGetCount()))
+        indices = backend.device_indices
+        names = backend.device_names
+        tdps = [backend.device_tdp_w(i) for i in range(backend.device_count)]
+        mem_totals_gb = [
+            backend.device_memory_total_bytes(i) / (1024 ** 3)
+            for i in range(backend.device_count)
+        ]
+        n_gpu = backend.device_count
 
-        handles, names, tdps, mem_totals = [], [], [], []
-        for i in gpu_indices:
-            h = pynvml.nvmlDeviceGetHandleByIndex(i)
-            handles.append(h)
-            n = pynvml.nvmlDeviceGetName(h)
-            names.append(n.decode("utf-8") if isinstance(n, bytes) else n)
-            try:
-                tdps.append(pynvml.nvmlDeviceGetPowerManagementLimit(h) / 1000.0)
-            except pynvml.NVMLError:
-                tdps.append(0.0)
-            try:
-                mem_totals.append(pynvml.nvmlDeviceGetMemoryInfo(h).total / (1024 ** 3))
-            except pynvml.NVMLError:
-                mem_totals.append(0.0)
-
-        n_gpu = len(handles)
         sys.stdout.write(_HIDE)
         print()
-        print("  matcha monitor - live GPU power")
+        print(f"  matcha monitor - live GPU power  (backend: {backend.name})")
         print(f"  {'-' * _WIDTH}")
         print(
             f"  {'gpu':>3}  {'name':<26}  {'power':>13}  "
@@ -103,30 +92,17 @@ def run(gpu_indices: Optional[List[int]], interval_ms: int) -> int:
             while True:
                 now = time.monotonic()
                 powers, utils, temps, mems = [], [], [], []
-                for h in handles:
-                    try:
-                        p = pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0
-                    except pynvml.NVMLError:
-                        p = 0.0
-                    try:
-                        u = pynvml.nvmlDeviceGetUtilizationRates(h).gpu
-                    except pynvml.NVMLError:
-                        u = 0
-                    try:
-                        t = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
-                    except pynvml.NVMLError:
-                        t = 0
-                    try:
-                        m = pynvml.nvmlDeviceGetMemoryInfo(h).used / (1024 ** 3)
-                    except pynvml.NVMLError:
-                        m = 0.0
-                    powers.append(p)
-                    utils.append(u)
-                    temps.append(t)
-                    mems.append(m)
+                for i in range(n_gpu):
+                    powers.append(backend.read_power_w(i))
+                    utils.append(backend.read_utilization_pct(i))
+                    temps.append(backend.read_temperature_c(i))
+                    mems.append(backend.read_memory_used_bytes(i) / (1024 ** 3))
 
                 total_w = sum(powers)
                 if not first:
+                    # Trapezoidal running energy — accurate enough for a
+                    # live dashboard regardless of whether the backend
+                    # itself has an energy counter.
                     total_energy_j += 0.5 * (last_total_w + total_w) * (now - last_t)
                 last_t, last_total_w = now, total_w
                 peak_total_w = max(peak_total_w, total_w)
@@ -135,12 +111,12 @@ def run(gpu_indices: Optional[List[int]], interval_ms: int) -> int:
                 sys.stdout.write(_UP * (n_gpu + 2))
 
                 for idx, name, tdp, p, u, t, m, mt in zip(
-                    gpu_indices, names, tdps, powers, utils, temps, mems, mem_totals
+                    indices, names, tdps, powers, utils, temps, mems, mem_totals_gb
                 ):
                     nm = name[:26]
                     pw = f"{p:>4.0f}W/{tdp:>4.0f}W" if tdp else f"{p:>4.0f}W"
                     ratio = (p / tdp) if tdp else 0.0
-                    mem = f"{m:>4.1f}/{mt:>4.1f}G" if mt else f"{m:>4.1f}G"
+                    mem = f"{m:>4.1f}/{mt:>4.1f}G" if mt else (f"{m:>4.1f}G" if m else "  -")
                     sys.stdout.write(
                         f"  {idx:>3}  "
                         f"{nm:<26}  "
@@ -179,7 +155,7 @@ def run(gpu_indices: Optional[List[int]], interval_ms: int) -> int:
             print()
     finally:
         try:
-            pynvml.nvmlShutdown()
+            backend.shutdown()
         except Exception:
             pass
 

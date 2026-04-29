@@ -1,9 +1,11 @@
-<h1 align="center">
-  <img src="https://raw.githubusercontent.com/keeyalabs/usematcha/main/docs/matcha.svg" alt="matcha" width="280">
-</h1>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/keeyalabs/usematcha/main/docs/logomark.svg" alt="matcha logomark" width="72" height="70">
+</p>
+
+<h1 align="center">matcha</h1>
 
 <p align="center">
-  <b>GPU energy observability for AI training.</b>
+  <b>GPU energy observability for AI training & fine-tuning.</b>
 </p>
 
 <p align="center">
@@ -15,7 +17,8 @@
 </p>
 
 <p align="center">
-  Measure energy per training run and per step — from NVML's hardware counter, not sampled power.
+  Measure energy per training run and per step — from the GPU's hardware metrics.
+  Works on NVIDIA, AMD, Intel, and Apple Silicon.
   Zero-code CLI, Python API, and HuggingFace Trainer callback.
   Structured output for any observability stack.
 </p>
@@ -28,7 +31,10 @@
 pip install usematcha
 ```
 
-Linux, Python 3.9+, NVIDIA GPU with drivers installed.
+Python 3.9+. Linux or macOS. One supported GPU: NVIDIA (NVML), AMD
+(`rocm-smi`), Intel (`xpu-smi`), or Apple Silicon (IOReport — no sudo,
+no extra deps). Auto-detects at start; override with
+`MATCHA_BACKEND=nvml|rocm|intel|apple` on multi-vendor hosts.
 
 ## Quickstart
 
@@ -40,13 +46,19 @@ matcha run torchrun --standalone --nproc_per_node=8 train_gpt.py
 matcha_energy gpus:8x NVIDIA H100 80GB HBM3 total:778168J (216.16Wh) duration:203.1s avg_power:3832W peak_power:4120W samples:2031
 ```
 
+Same command on a MacBook (M-series) against an MLX training script:
+
+```
+matcha_energy gpus:Apple M4 total:4449J (1.24Wh) duration:837.9s avg_power:5W peak_power:19W samples:8066
+```
+
 No code changes. No config files. Works with any training script.
 
 ---
 
 ## Three ways to use it
 
-matcha exposes **one measurement engine** through three surfaces. All three read the same NVML hardware counter and emit the same `StepResult` / `SessionResult` shape.
+matcha exposes **one measurement engine** through three surfaces. All three read the active vendor's hardware counter (NVML on NVIDIA, IOReport on Apple Silicon) or polled power (AMD, Intel) and emit the same `StepResult` / `SessionResult` shape — including a `backend` field so multi-vendor fleets slice cleanly.
 
 **CLI** — zero-code, wraps any training command.
 
@@ -112,7 +124,13 @@ matcha run --gpus 0,1,2,3 torchrun ...
 
 ## How it works
 
-matcha reads energy directly from NVML's hardware accumulator (`nvmlDeviceGetTotalEnergyConsumption`, Volta+). Per-step and session energy are exact counter deltas — millijoule-precise, no integration error. A background poller plus boundary reads at each step transition track peak power. Pre-Volta GPUs fall back to trapezoidal integration. Training runs natively; matcha never touches your model or training loop.
+One engine, four backends.
+
+- **NVIDIA (NVML, Volta+).** Reads `nvmlDeviceGetTotalEnergyConsumption` — a millijoule-precise cumulative energy counter. Per-step and session energy are exact counter deltas (no integration error, zero per-step overhead). Pre-Volta cards fall back to trapezoidal integration of polled power.
+- **Apple Silicon (IOReport).** Reads Darwin's IOReport framework directly via stdlib `ctypes` (`/usr/lib/libIOReport.dylib`). Same semantic class as NVML — cumulative millijoule GPU counter — so `energy_source="counter"` on M-series too. No sudo, no `powermetrics` subprocess, no extra pip deps. Step boundaries force a fresh IOReport sample so per-step attribution is counter-exact even for sub-100 ms steps.
+- **AMD (`rocm-smi`) / Intel (`xpu-smi`).** Vendor CLI under a cached refresher thread; energy is trapezoidal integration of polled power today. `amdsmi` / Level Zero counter paths land next.
+
+A background poller plus boundary reads at each step transition track peak power on every backend. Training runs natively; matcha never touches your model or training loop.
 
 Full design in [ARCHITECTURE.md](https://github.com/keeyalabs/usematcha/blob/main/ARCHITECTURE.md).
 
@@ -128,8 +146,4 @@ Full design in [ARCHITECTURE.md](https://github.com/keeyalabs/usematcha/blob/mai
   <a href="https://github.com/keeyalabs/usematcha/blob/main/CONTRIBUTING.md">Contributing</a>
   &nbsp;·&nbsp;
   <a href="https://github.com/keeyalabs/usematcha/blob/main/SECURITY.md">Security</a>
-</p>
-
-<p align="center">
-  Built by <a href="https://keeyalabs.com">Keeya Labs</a>. Apache 2.0.
 </p>
