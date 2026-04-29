@@ -5,9 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] — unreleased
+## [0.3.1] — 2026-04-29
 
-> Pre-released as **`0.3.0rc1`** on 2026-04-19 for on-hardware validation. Install with `pip install --pre usematcha` or `pip install usematcha==0.3.0rc1`. The final `0.3.0` will carry identical code if the RC is clean.
+### Added
+- **Two new step-line regex patterns in `matcha wrap`** for the modded-nanogpt / parameter-golf log style that drops the `step:` prefix.
+  - Bare `N/total` at line-start followed by `train_loss` or `val_loss` (anchored + key-suffix so TTT progress lines like `tttg: c1/131` and `ttp: b782/782` don't false-match).
+  - TTT per-SGD-chunk progress lines (`tttg: c1/131 lr:0.001 t:0.3s`), so eval-time TTT energy is sliced at chunk granularity. Chunk numbers reset across phases — matcha's `step_gap` clamp handles the boundary cleanly enough that per-phase analysis can split on cumulative timestamps in the JSONL.
+- These together unlock per-step energy attribution for parameter-golf SOTA submissions (PR #1394 onwards) and per-chunk attribution through phased / score-first TTT eval, where eval often dominates total run energy.
+
+### Compatibility
+- Strictly additive: existing `step:N/total` style logs (parameter-golf baseline, nanoGPT, HuggingFace Trainer) are unaffected because the new patterns are appended to `_PATTERNS` and the matcher returns the first hit. No CLI flags, no JSONL schema changes, no API changes.
+
+## [0.3.0] — 2026-04-19
+
+> Pre-released as **`0.3.0rc1`** on 2026-04-19 for on-hardware validation. Promoted to `0.3.0` with identical code; subsequent log-format coverage shipped in `0.3.1`.
 
 ### Added
 - **Python API** — `matcha.session()` context manager and `matcha.Session` class. Thin facade over the internal power sampler with lifecycle methods (`start` / `stop`, `step_begin` / `step_end`, `with s.step(i):` sugar), `update_metrics` passthrough for user-supplied scalars, and read-only introspection (`gpu_name`, `energy_source`, `last_step`, `steps_completed`, `result`, ...). Safe to construct on CPU-only hosts and in CI — NVML is only touched at `start()`. A module-level guard raises a clean error if a second session is started in the same process. Public API is exposed via `__getattr__` on the `matcha` package, so `import matcha` stays pynvml-free (~35ms cold import on Python 3.12).
