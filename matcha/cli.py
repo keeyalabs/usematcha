@@ -31,6 +31,18 @@ _PATTERNS = [
     re.compile(r"iteration\s+(\d+)", re.IGNORECASE),
     re.compile(r"\[(\d+)/\d+\]"),
     re.compile(r"training\s+step\s+(\d+)", re.IGNORECASE),
+    # Bare `N/total` at line-start followed by train_loss/val_loss — used by
+    # parameter-golf submissions and modded-nanogpt forks that drop the
+    # `step:` prefix. Anchored + key-suffix so we don't match TTT progress
+    # lines (`tttg: c1/131`, `ttp: b782/782`) or in-line ratios.
+    re.compile(r"^\s*(\d+)/\d+\s+(?:train_loss|val_loss)", re.IGNORECASE),
+    # TTT per-chunk SGD progress — `tttg: c1/131 lr:0.001 t:0.3s`. Each
+    # chunk is one unit of eval-time work; this lets `wrap` slice TTT eval
+    # energy at chunk granularity. Numbers reset across phases (phase 1:
+    # c1-c131, phase 2: c1-c219, ...) — matcha's step_gap clamp handles
+    # the 3 reset boundaries cleanly enough; per-phase analysis can split
+    # on cumulative timestamps in the JSONL.
+    re.compile(r"^tttg:\s*c(\d+)/\d+", re.IGNORECASE),
 ]
 
 

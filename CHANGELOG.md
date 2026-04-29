@@ -5,7 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] — 2026-04-20
+## [0.3.1] — 2026-04-29
+
+### Added
+- **Two new step-line regex patterns in `matcha wrap`** for the modded-nanogpt / parameter-golf log style that drops the `step:` prefix.
+  - Bare `N/total` at line-start followed by `train_loss` or `val_loss` (anchored + key-suffix so TTT progress lines like `tttg: c1/131` and `ttp: b782/782` don't false-match).
+  - TTT per-SGD-chunk progress lines (`tttg: c1/131 lr:0.001 t:0.3s`), so eval-time TTT energy is sliced at chunk granularity. Chunk numbers reset across phases — matcha's `step_gap` clamp handles the boundary cleanly enough that per-phase analysis can split on cumulative timestamps in the JSONL.
+- These together unlock per-step energy attribution for parameter-golf SOTA submissions (PR #1394 onwards) and per-chunk attribution through phased / score-first TTT eval, where eval often dominates total run energy.
+
+### Compatibility
+- Strictly additive: existing `step:N/total` style logs (parameter-golf baseline, nanoGPT, HuggingFace Trainer) are unaffected because the new patterns are appended to `_PATTERNS` and the matcher returns the first hit. No CLI flags, no JSONL schema changes, no API changes.
+
+## [0.3.0] — 2026-04-19
+
+> Pre-released as **`0.3.0rc1`** on 2026-04-19 for on-hardware validation. Promoted to `0.3.0` with identical code; subsequent log-format coverage shipped in `0.3.1`.
 
 ### Added
 - **Multi-vendor hardware backends.** matcha's measurement engine is now vendor-agnostic: the same `session_start` / `step` / `session_end` schema, the same Prometheus and OTLP metric names, and the same `matcha_energy` summary line are produced on NVIDIA (NVML), AMD (`rocm-smi`), Intel (`xpu-smi`), and Apple Silicon (IOReport). Hosts auto-detect at `start()`; override with `MATCHA_BACKEND=nvml|rocm|intel|apple` for multi-vendor machines. Backend is tagged into every record (`backend` field on `SessionResult`, `matcha.backend` OTel resource attribute, `backend` Prometheus label). NVIDIA remains the fastest path (millijoule-precise hardware energy counter, microsecond reads). ROCm and Intel backends run their vendor CLI under a cached refresher thread so sampler latency stays flat; energy is derived by trapezoidal integration of polled power until the `amdsmi` / Level Zero counter paths land. **Apple Silicon reads Darwin's IOReport framework directly via ctypes** — cumulative millijoule GPU energy counters, same semantic class as NVML's `nvmlDeviceGetTotalEnergyConsumption`, so `energy_source="counter"` on M-series too. **No sudo, no `powermetrics` subprocess, no extra pip deps** (stdlib ctypes against `/usr/lib/libIOReport.dylib`). Step-boundary energy reads force a fresh IOReport sample, so per-step attribution is **counter-exact** — short steps (≤100ms) are attributed correctly without smearing across refresher ticks, matching NVIDIA's microsecond-precise step boundaries. The background refresher runs at 20 Hz (50ms) by default — a ~3% one-core cost that keeps `read_power_w` fresh for peak detection during long steps; tunable via `AppleSiliconBackend(refresh_ms=…)` (floor 5ms).
